@@ -1,0 +1,10 @@
+import { Router } from 'express';
+import { getSettings, updateSettings, updateMediaSettings, updateConfig, test, testMedia } from '../controllers/aiController.js';
+const r = Router();
+r.get('/settings', getSettings);
+r.put('/settings', updateSettings);
+r.put('/media-settings', updateMediaSettings);
+r.put('/config', updateConfig);
+r.post('/test/:provider', test);
+r.post('/test-media/:type/:provider', testMedia);
+export default r;

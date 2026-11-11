@@ -1,0 +1,19 @@
+1
+00:00:00,000 --> 00:00:08,000
+Wow! A carrot rainbow!
+
+2
+00:00:08,000 --> 00:00:16,000
+Squirrel seems sad.
+
+3
+00:00:16,000 --> 00:00:24,000
+Sharing a carrot!
+
+4
+00:00:24,000 --> 00:00:32,000
+Happy together!
+
+5
+00:00:32,000 --> 00:00:39,000
+Sharing makes us all happy!

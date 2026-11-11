@@ -1,0 +1,6 @@
+/* Append to client/src/styles.css */
+.skillLiveProgress{margin:14px 0;padding:16px;border:1px solid rgba(0,243,255,.22);border-radius:14px;background:rgba(0,243,255,.035)}
+.skillLiveTop{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.skillLiveTop>div{display:grid;gap:4px}.skillLiveTop strong{font-size:18px}.skillLiveTop span{font-size:12px;opacity:.72}.skillLiveTop>b{font-size:14px;white-space:nowrap}
+.skillProgressBar{height:7px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden;margin:14px 0}.skillProgressBar i{display:block;height:100%;background:#00f3ff;transition:width .35s ease}
+.skillLiveLog{display:grid;gap:6px;max-height:190px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}.skillLiveLog>div{display:grid;grid-template-columns:78px 52px 1fr;gap:8px;align-items:start}.skillLiveLog time{opacity:.45}.skillLiveLog b{font-size:10px}.skillLiveLog b.start{color:#00f3ff}.skillLiveLog b.pass{color:#67e8a5}.skillLiveLog b.fail,.skillLiveLog b.error{color:#ff6b7a}.skillLiveLog b.done{color:#fff}
+.skillTestRow.running{border-color:rgba(0,243,255,.4);box-shadow:0 0 0 1px rgba(0,243,255,.08) inset}.skillTestRow.running span{color:#00f3ff}
