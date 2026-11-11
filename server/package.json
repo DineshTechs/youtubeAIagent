@@ -1,22 +1,24 @@
 {
-  "name": "kids-youtube-agent-server",
-  "version": "1.4.0",
+  "name": "youtube-ai-agent-server",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node --watch src/app.js",
     "start": "node src/app.js",
-    "test": "node --test"
+    "test": "node --test",
+    "verify:ocr": "node scripts/verify-ocr.js"
   },
   "dependencies": {
+    "@google/genai": "^2.3.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0",
     "mongoose": "^8.9.5",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
-    "zod": "^3.24.1",
-    "@google/genai": "^2.3.0",
-    "ffmpeg-static": "^5.2.0"
+    "tesseract.js": "^6.0.1",
+    "zod": "^3.24.1"
   }
 }

@@ -30,7 +30,7 @@ export async function getVideo(req,res,next){try{
 export async function approveVideo(req,res,next){try{
   const current=await Video.findById(req.params.id).lean();
   if(!current)return res.status(404).json({error:'Video not found'});
-  if(['1.2','1.3','1.4'].includes(String(current.qa?.version))) {
+  if(['1.2','1.3','1.4','1.5.0'].includes(String(current.qa?.version))) {
     const review=current.visualReview||{};
     if(!current.qa.pass)return res.status(409).json({error:'Technical QA has failed. Run QA again or fix the reported issues before approval.'});
     if(!(review.imagesMatch&&review.subtitlesReadable&&review.ageAppropriate))return res.status(409).json({error:'Complete all three visual review checks before approving this video.'});
@@ -138,12 +138,14 @@ export async function cancelVideo(req,res,next){try{
   const job=await GenerationJob.findOne({videoId:video._id,status:{$in:['QUEUED','RUNNING']}}).sort({createdAt:-1});
   if(!job)return res.status(409).json({error:'No active generation job for this video.'});
   if(job.status==='QUEUED'){
-    await GenerationJob.findByIdAndUpdate(job._id,{$set:{status:'CANCELLED',cancelRequested:true,cancelledAt:new Date(),completedAt:new Date(),step:'CANCELLED'},$push:{logs:{message:'Cancelled before worker start.',level:'warning'}}});
-  }else{
-    await GenerationJob.findByIdAndUpdate(job._id,{$set:{cancelRequested:true},$push:{logs:{message:'Cancellation requested by user.',level:'warning'}}});
+    await GenerationJob.findByIdAndUpdate(job._id,{$set:{status:'CANCELLED',cancelRequested:true,cancelledAt:new Date(),completedAt:new Date(),step:'CANCELLED'},$push:{logs:{at:new Date(),message:'Cancelled before worker start.',level:'warning'}}});
+    await Video.findByIdAndUpdate(video._id,{$set:{status:'CANCELLED'},$push:{statusHistory:{status:'CANCELLED',message:'Cancelled before worker start.',attempt:job?.retryCount||0,source:'VIDEO'}}});
+    return res.json({ok:true,jobId:job._id,status:'CANCELLED'});
   }
-  await Video.findByIdAndUpdate(video._id,{$set:{status:'CANCELLED'},$push:{statusHistory:{status:'CANCELLED',message:'Cancellation requested by user.',attempt:job?.retryCount||0,source:'VIDEO'}}});
-  res.json({ok:true,jobId:job._id,status:'CANCELLED'});
+  await GenerationJob.findByIdAndUpdate(job._id,{$set:{cancelRequested:true},$push:{logs:{at:new Date(),message:'Cancellation requested by user. Waiting for FFmpeg to stop safely.',level:'warning'}}});
+  // Do not mark the video terminal while its worker/FFmpeg child is still running.
+  // The worker changes Video and GenerationJob to CANCELLED after FFmpeg exits.
+  res.json({ok:true,jobId:job._id,status:'CANCELLATION_REQUESTED',message:'Stopping current stage. Continue will become available once the worker has stopped.'});
 }catch(e){next(e);}}
 
 

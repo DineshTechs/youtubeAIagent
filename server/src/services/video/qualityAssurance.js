@@ -19,7 +19,7 @@ function seconds(value){const p=String(value||'').trim().split(':').map(Number);
 function matches(output,pattern){return [...output.matchAll(pattern)].map(m=>Number(m[1])).filter(Number.isFinite);}
 function sumSegments(starts,ends){let total=0;for(let i=0;i<Math.min(starts.length,ends.length);i++)total+=Math.max(0,ends[i]-starts[i]);return total;}
 
-export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,expectedHeight=1920,scenePaths=[],audioPath,subtitlePath,expectedDurationSec,expectedSceneCount,sceneDurations=[],expectedOpeningHook=''}={}){
+export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,expectedHeight=1920,scenePaths=[],audioPath,subtitlePath,expectedDurationSec,expectedSceneCount,sceneDurations=[],expectedOpeningHook='',expectedAspectRatio='9:16'}={}){
   const checks=[];
   if(!videoPath){checks.push(check('Rendered file','FAIL','No rendered MP4 path was supplied.'));return report(checks);}
   let stat;
@@ -45,9 +45,12 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
   checks.push(check('Video stream',vm?'PASS':'FAIL',vm?'Video stream detected.':'No video stream detected.'));
   checks.push(check('Audio stream',am?'PASS':'FAIL',am?'Narration/audio stream detected.':'No audio stream detected.'));
   if(width&&height){
-    const portrait=height>width,aspect=Math.abs(width/height-9/16)<.025,resolution=width>=720&&height>=1280;
-    checks.push(check('Portrait format',portrait&&aspect?'PASS':'FAIL',portrait&&aspect?'Portrait 9:16 aspect ratio confirmed.':`Expected 9:16 portrait; found ${width}x${height}.`,{width,height,aspectRatio:Number((width/height).toFixed(4))}));
-    checks.push(check('Resolution',resolution?'PASS':'WARN',resolution?`Resolution ${width}x${height} is suitable for Shorts.`:`Resolution ${width}x${height} is below 720x1280.`,{width,height,expectedWidth,expectedHeight}));
+    const ratios={'9:16':9/16,'16:9':16/9,'1:1':1,'3:4':3/4};
+    const targetRatio=ratios[expectedAspectRatio]||ratios['9:16'];
+    const aspect=Math.abs(width/height-targetRatio)<.025;
+    const resolution=width>=720&&height>=720;
+    checks.push(check('Aspect ratio',aspect?'PASS':'FAIL',aspect?`${expectedAspectRatio} aspect ratio confirmed.`:`Expected ${expectedAspectRatio}; found ${width}x${height}.`,{width,height,expectedAspectRatio,actualAspectRatio:Number((width/height).toFixed(4))}));
+    checks.push(check('Resolution',resolution?'PASS':'WARN',resolution?`Resolution ${width}x${height} is suitable for the selected format.`:`Resolution ${width}x${height} is below the recommended minimum.`,{width,height,expectedWidth,expectedHeight}));
   }else checks.push(check('Video metadata','FAIL','FFmpeg could not determine the rendered video dimensions.'));
   if(durationSec!=null){
     const valid=durationSec>0&&durationSec<=180;
@@ -141,4 +144,4 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
   checks.push(check('Story suitability','REVIEW','Human review required: check age suitability, story clarity and originality.'));
   return report(checks,{durationSec,width,height,sizeBytes:stat.size,videoPath,ffmpegPath:path.basename(ffmpegPath)});
 }
-function report(checks,meta={}){const failures=checks.filter(x=>x.status==='FAIL').length,warnings=checks.filter(x=>x.status==='WARN').length,passed=checks.filter(x=>x.status==='PASS').length,score=Math.max(0,Math.round(passed/(passed+warnings+failures||1)*100));return {version:'1.4',pass:failures===0,score,summary:{passed,warnings,failures,manualReviews:checks.filter(x=>x.status==='REVIEW').length},checks,meta,ranAt:new Date()};}
+function report(checks,meta={}){const failures=checks.filter(x=>x.status==='FAIL').length,warnings=checks.filter(x=>x.status==='WARN').length,passed=checks.filter(x=>x.status==='PASS').length,score=Math.max(0,Math.round(passed/(passed+warnings+failures||1)*100));return {version:'1.5.0',pass:failures===0,score,summary:{passed,warnings,failures,manualReviews:checks.filter(x=>x.status==='REVIEW').length},checks,meta,ranAt:new Date()};}

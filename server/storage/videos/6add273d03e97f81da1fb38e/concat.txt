@@ -1,2 +1,0 @@
-ffconcat version 1.0
-file 'D:/WebApps/youtubeAIagent/server/storage/videos/6add273d03e97f81da1fb38e/scene-clips/scene-001.mp4'

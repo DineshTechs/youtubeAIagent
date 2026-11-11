@@ -206,10 +206,17 @@ async function generateGroqSpeech(text, outFile) {
   return outFile;
 }
 
-async function generateOpenAISpeech(text, outFile, language = 'English') {
+async function generateOpenAISpeech(text, outFile, language = 'English', profile = {}) {
   if (!env.openaiKey) throw new Error('OPENAI_API_KEY is not configured for TTS.');
   const settings = await getMediaSettings();
-  const r = await fetch('https://api.openai.com/v1/audio/speech', { method:'POST', headers:{Authorization:`Bearer ${env.openaiKey}`,'Content-Type':'application/json'}, body:JSON.stringify({model:settings.ttsModel || env.openaiTtsModel, voice:settings.ttsVoice || env.openaiTtsVoice, input:text, response_format:'mp3', ...(String(language).toLowerCase().startsWith('hi') ? {instructions:'Speak naturally in Hindi using clear Devanagari pronunciation. Use a warm, friendly, child-appropriate storytelling voice. Do not translate the text into English; speak the provided Hindi text as written.'} : {})}) });
+  const model=settings.ttsModel || env.openaiTtsModel;
+  const body={model,voice:settings.ttsVoice||env.openaiTtsVoice,input:text,response_format:'mp3'};
+  // Free-form delivery instructions are supported by gpt-4o-mini-tts, not all
+  // legacy TTS models. Keep older configured models compatible.
+  if(String(model||'').includes('gpt-4o-mini-tts')){
+    body.instructions=`Speak in ${language}. Voice style: ${profile.voiceStyle||'natural, clear and engaging'}. Audience: ${profile.audience||'the channel audience'}. Pace: ${profile.pace||'natural'}. Energy: ${profile.energy||'confident and engaging'}. Read the supplied text verbatim. Do not add, omit, translate or paraphrase words.`;
+  }
+  const r = await fetch('https://api.openai.com/v1/audio/speech', { method:'POST', headers:{Authorization:`Bearer ${env.openaiKey}`,'Content-Type':'application/json'}, body:JSON.stringify(body) });
   if (!r.ok) throw new Error(`OpenAI audio/speech failed (${r.status}): ${(await r.text()).slice(0,800)}`);
   await fs.writeFile(outFile, Buffer.from(await r.arrayBuffer()));
   return outFile;
@@ -283,15 +290,13 @@ function describeGeminiResponse(result) {
   return `Response status: ${status}; output blocks: ${types}.`;
 }
 
-async function generateGeminiSpeech(text, outFile, language = 'English') {
+async function generateGeminiSpeech(text, outFile, language = 'English', profile = {}) {
   if (!env.geminiKey) throw new Error('GEMINI_API_KEY is not configured for Gemini TTS.');
   const settings = await getMediaSettings();
   const model = settings.ttsModel || env.geminiTtsModel || 'gemini-3.8-flash-tts';
   const voice = settings.ttsVoice || env.geminiTtsVoice || 'Kore';
   const isHindi = String(language || '').toLowerCase().startsWith('hi') || String(language || '').toLowerCase().includes('hindi');
-  const style = isHindi
-    ? 'Speak in a natural native Indian Hindi accent. Use clear standard Hindi pronunciation and authentic Indian intonation. Deliver the narration warmly and expressively, suitable for a children’s YouTube story. Speak the supplied Devanagari transcript verbatim; do not translate, paraphrase, or add words.'
-    : 'Speak clearly and naturally with warm, expressive storytelling delivery, suitable for a family-friendly YouTube narration. Read the supplied transcript verbatim; do not add or omit words.';
+  const style = `Speak in ${language}. Use this voice style: ${profile.voiceStyle||'natural, clear and engaging'}. Pace: ${profile.pace||'natural'}. Energy: ${profile.energy||'confident and engaging'}. Use natural pronunciation for the supplied language. Read the supplied transcript verbatim; do not translate, paraphrase, add or omit words.`;
 
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
     method: 'POST',
@@ -355,7 +360,7 @@ async function generateGeminiSpeech(text, outFile, language = 'English') {
   return outFile;
 }
 
-export async function generateSpeech(text, outFile, language = 'English') {
+export async function generateSpeech(text, outFile, language = 'English', profile = {}) {
   const { ttsProvider } = await getMediaSettings();
   const isHindi = String(language || '').toLowerCase().startsWith('hi') || String(language || '').toLowerCase().includes('hindi');
   if (ttsProvider === 'mock') { const { generateMockSpeech } = await import('./mockMedia.js'); return generateMockSpeech(text, outFile); }
@@ -364,7 +369,7 @@ export async function generateSpeech(text, outFile, language = 'English') {
   if (ttsProvider === 'groq') {
     return generateGroqSpeech(text, outFile);
   }
-  if (ttsProvider === 'openai') return generateOpenAISpeech(text, outFile, language);
-  if (ttsProvider === 'gemini') return generateGeminiSpeech(text, outFile, language);
+  if (ttsProvider === 'openai') return generateOpenAISpeech(text, outFile, language, profile);
+  if (ttsProvider === 'gemini') return generateGeminiSpeech(text, outFile, language, profile);
   throw new Error(`Unsupported TTS provider: ${ttsProvider}`);
 }

@@ -13,7 +13,7 @@ export async function createSeries(req, res, next) {
 
 export async function updateSeries(req, res, next) {
   try {
-    const allowed={name:req.body.name,premise:req.body.premise,niche:req.body.niche,targetAge:req.body.targetAge,language:req.body.language,visualStyle:req.body.visualStyle,rules:req.body.rules,active:req.body.active,topicIdeas:req.body.topicIdeas,channelResearch:req.body.channelResearch,contentStrategy:req.body.contentStrategy};
+    const allowed={name:req.body.name,premise:req.body.premise,niche:req.body.niche,targetAge:req.body.targetAge,language:req.body.language,visualStyle:req.body.visualStyle,channelProfile:req.body.channelProfile,rules:req.body.rules,active:req.body.active,topicIdeas:req.body.topicIdeas,channelResearch:req.body.channelResearch,contentStrategy:req.body.contentStrategy};
     Object.keys(allowed).forEach(k=>allowed[k]===undefined&&delete allowed[k]);
     const series=await Series.findByIdAndUpdate(req.params.id,{$set:allowed},{new:true,runValidators:true});
     if(!series)return res.status(404).json({error:'Series not found'});
@@ -51,9 +51,14 @@ export async function researchChannel(req,res,next){
       name:strategy.seriesName||strategy.channelName||result.raw?.channelTitle||'New YouTube Series',
       premise:strategy.premise||strategy.strategySummary||'',
       niche:strategy.niche||'',
-      targetAge:strategy.targetAge||'4-8',
+      targetAge:strategy.targetAge||strategy.audience||'General audience',
       language:language,
-      visualStyle:strategy.visualStyle||''
+      visualStyle:strategy.visualStyle||'',
+      tone:strategy.tone||'Engaging and informative',
+      contentFormat:strategy.primaryFormat||strategy.formatPatterns?.[0]||'Explainer',
+      aspectRatio:'9:16',
+      voiceStyle:strategy.voiceStyle||'Natural, clear and engaging',
+      channelProfile:strategy.channelProfile||{niche:strategy.niche||'',targetAudience:strategy.audience||'General audience',tone:strategy.tone||'Engaging and informative',content:{primaryFormat:strategy.primaryFormat||'Explainer',tone:strategy.tone||'Engaging and informative'},visual:{style:strategy.visualStyle||'Cinematic, high-quality visuals'},narration:{voiceStyle:strategy.voiceStyle||'Natural and engaging'},source:'channel-research'}
     }});
   }catch(e){next(e);}
 }
@@ -68,6 +73,18 @@ export async function researchSeriesChannel(req,res,next){
     series.channelResearch=result;
     series.contentStrategy=strategy;
     series.niche=strategy.niche||series.niche||'';
+    series.targetAge=strategy.audience||series.targetAge||'General audience';
+    series.channelProfile={
+      ...(series.channelProfile||{}),
+      version:1,
+      niche:series.niche,
+      targetAudience:strategy.audience||'General audience',
+      audience:{...(series.channelProfile?.audience||{}),description:strategy.audience||'General audience'},
+      content:{...(series.channelProfile?.content||{}),primaryFormat:strategy.primaryFormat||strategy.formatPatterns?.[0]||'Explainer',tone:strategy.tone||'Engaging and informative'},
+      visual:{...(series.channelProfile?.visual||{}),style:strategy.visualStyle||series.visualStyle,aspectRatio:series.channelProfile?.visual?.aspectRatio||'9:16'},
+      narration:{...(series.channelProfile?.narration||{}),voiceStyle:strategy.voiceStyle||'Natural, clear and engaging'},
+      source:'channel-research'
+    };
     series.visualStyle=strategy.visualStyle||series.visualStyle;
     series.topicIdeas=Array.isArray(strategy.topicIdeas)?strategy.topicIdeas.map(String).slice(0,50):series.topicIdeas;
     await series.save();
@@ -77,12 +94,26 @@ export async function researchSeriesChannel(req,res,next){
 
 export async function seedUniverse(req, res, next) {
   try {
-    let series = await Series.findOne({ name: "Little Bunny Adventures" });
+    let series = await Series.findOne({ name: "My YouTube Channel" });
     if (!series) {
-      series = await Series.create({ name: "Little Bunny Adventures", premise: "A kind little bunny learns simple life lessons through wholesome adventures.", niche:"Kids educational stories", targetAge: "4-8", language: "English", visualStyle: "bright, soft, colorful 3D children's animation", rules: ["No violence", "No frightening imagery", "Positive and age-appropriate", "Original characters"] });
+      series = await Series.create({
+        name: "My YouTube Channel",
+        premise: "Create original videos that serve the channel's niche and audience.",
+        niche: "General",
+        targetAge: "General audience",
+        language: "English",
+        visualStyle: "Cinematic, high-quality visuals",
+        channelProfile: {
+          version: 1,
+          audience: { description: "General audience", knowledgeLevel: "general" },
+          content: { primaryFormat: "Explainer", tone: "Engaging and informative", storytellingApproach: "Clear and niche-appropriate" },
+          visual: { style: "Cinematic, high-quality visuals", aspectRatio: "9:16" },
+          narration: { voiceStyle: "Natural, clear and engaging" },
+          editorial: { safetyMode: "standard", factChecking: true },
+          source: "default-general-channel"
+        }
+      });
     }
-    const existing = await Character.findOne({ seriesId: series._id, name: "Little Bunny" });
-    if (!existing) await Character.create({ seriesId: series._id, name: "Little Bunny", personality: "curious, kind, playful and helpful", appearance: "small cream-colored bunny with long ears, blue overalls and a yellow scarf", voiceProfile: "warm, cheerful child-friendly narrator" });
     res.json({ series, seeded: true });
   } catch (e) { next(e); }
 }

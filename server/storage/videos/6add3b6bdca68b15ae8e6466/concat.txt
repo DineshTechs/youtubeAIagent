@@ -1,6 +1,0 @@
-ffconcat version 1.0
-file 'D:/WebApps/youtubeAIagent/server/storage/videos/6add3b6bdca68b15ae8e6466/scene-clips/scene-001.mp4'
-file 'D:/WebApps/youtubeAIagent/server/storage/videos/6add3b6bdca68b15ae8e6466/scene-clips/scene-002.mp4'
-file 'D:/WebApps/youtubeAIagent/server/storage/videos/6add3b6bdca68b15ae8e6466/scene-clips/scene-003.mp4'
-file 'D:/WebApps/youtubeAIagent/server/storage/videos/6add3b6bdca68b15ae8e6466/scene-clips/scene-004.mp4'
-file 'D:/WebApps/youtubeAIagent/server/storage/videos/6add3b6bdca68b15ae8e6466/scene-clips/scene-005.mp4'

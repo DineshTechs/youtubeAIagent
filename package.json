@@ -1,6 +1,6 @@
 {
-  "name": "kids-youtube-agent",
-  "version": "1.3.0",
+  "name": "youtube-ai-agent",
+  "version": "1.5.0",
   "private": true,
   "workspaces": [
     "server",

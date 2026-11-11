@@ -110,9 +110,9 @@ function skillInputSummary(skill,payload){
  * fabricated channel/comments/retention data. They can be executed by passing those
  * datasets in job.payload.
  */
-export async function optimizeForGeneration({story,series,topic,jobPayload={},onSkillStart,onSkillDone}={}){
+export async function optimizeForGeneration({story,series,channelProfile={},topic,jobPayload={},onSkillStart,onSkillDone}={}){
   const base=story||{};
-  const context=[series?.name?`Series: ${series.name}`:'',series?.targetAge?`Target age: ${series.targetAge}`:'',series?.premise?`Premise: ${series.premise}`:'',Array.isArray(series?.rules)&&series.rules.length?`Rules: ${series.rules.join('; ')}`:'','This is a children-friendly YouTube video. Preserve the supplied facts and story intent.'].filter(Boolean).join('\n');
+  const context=[series?.name?`Channel: ${series.name}`:'',channelProfile?.niche?`Niche: ${channelProfile.niche}`:'',channelProfile?.audience?.description?`Audience: ${channelProfile.audience.description}`:'',channelProfile?.language?`Language: ${channelProfile.language}`:'',channelProfile?.content?.tone?`Tone: ${channelProfile.content.tone}`:'',channelProfile?.content?.primaryFormat?`Content format: ${channelProfile.content.primaryFormat}`:'',series?.premise?`Premise: ${series.premise}`:'',Array.isArray(series?.rules)&&series.rules.length?`Rules: ${series.rules.join('; ')}`:'','Preserve the channel profile, supplied facts and original story intent. Do not assume a children\'s audience unless the profile says kids-and-family.'].filter(Boolean).join('\n');
   const scriptText=storyScript(base); const transcript=sceneTranscript(base);
   const output={enabled:true,generatedAt:new Date().toISOString(),applied:{title:null,hook:null},script:null,package:null,seo:null,shorts:null,local:optimizeStory(base),warnings:[],skillRuns:[]};
   async function run(name,payload,fn,meta={}){

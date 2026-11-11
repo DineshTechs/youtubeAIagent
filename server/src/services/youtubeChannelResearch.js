@@ -64,7 +64,7 @@ async function researchWithApi(url) {
 }
 
 async function researchPublicPage(url) {
-  const r=await fetch(url,{headers:{'user-agent':'Mozilla/5.0 (compatible; KidsYouTubeAgent/1.0)'}});
+  const r=await fetch(url,{headers:{'user-agent':'Mozilla/5.0 (compatible; YouTubeAIAgent/1.0)'}});
   const html=await r.text();
   if(!r.ok) throw new Error(`Could not open channel page (${r.status}).`);
   const title=(html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]||'').replace(/\s+/g,' ').trim().replace(/\s*-\s*YouTube\s*$/i,'');
@@ -77,7 +77,7 @@ async function researchPublicPage(url) {
 }
 
 function researchPrompt(raw, language='English') {
-  return `You are a YouTube channel strategist. Study the supplied channel research and produce an ORIGINAL content strategy for a new creator. Identify the likely niche, audience, recurring content patterns, topic clusters, title patterns, hook patterns, pacing/format patterns and visual style. Do NOT copy scripts, titles verbatim, characters, thumbnails, or distinctive creative assets. The output should describe patterns and generate fresh ideas inspired by the channel's audience demand. Write the strategy text and all topicIdeas in ${language}; if Hindi, use natural Devanagari. Keep proper nouns/channel names unchanged when appropriate. Return JSON with: niche, audience, contentPillars (array), topicIdeas (array of 15 fresh topics), titlePatterns (array), hookPatterns (array), formatPatterns (array), visualStyle, tone, avoidRepeating (array), strategySummary.\n\nCHANNEL RESEARCH:\n${JSON.stringify(raw,null,2)}`;
+  return `You are a YouTube channel strategist. Study the supplied channel research and produce an ORIGINAL content strategy for a new creator. Identify the likely niche, audience, recurring content patterns, topic clusters, title patterns, hook patterns, pacing/format patterns and visual style. Do NOT copy scripts, titles verbatim, characters, thumbnails, or distinctive creative assets. The output should describe patterns and generate fresh ideas inspired by the channel's audience demand. Write the strategy text and all topicIdeas in ${language}; if Hindi, use natural Devanagari. Keep proper nouns/channel names unchanged when appropriate. Return JSON with: niche, subNiche, audience, targetAge (only when clearly evidenced; otherwise use General audience), contentPillars (array), topicIdeas (array of 15 fresh topics), titlePatterns (array), hookPatterns (array), formatPatterns (array), primaryFormat, visualStyle, tone, voiceStyle, pacing, language, avoidRepeating (array), strategySummary. Do not assume the channel is for children.\n\nCHANNEL RESEARCH:\n${JSON.stringify(raw,null,2)}`;
 }
 
 export async function studyChannel(url, language='English') {

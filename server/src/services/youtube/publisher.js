@@ -29,7 +29,7 @@ export async function handleCallback(code,state){
 async function client(){if(!tokens) throw new Error('Connect a YouTube channel first.');const c=oauth();c.setCredentials(tokens);c.on('tokens',t=>{tokens={...tokens,...t};});return c;}
 function metadata(story,video,opts={}){
   const seo=story?.youtubeOptimization?.seo||{};
-  const desc=seo.description||seo.videoDescription||`${story?.topic||story?.title||'New video'}\n\nCreated with Kids Agent.`;
+  const desc=seo.description||seo.videoDescription||`${story?.topic||story?.title||'New video'}\n\nCreated with YouTube AI Agent.`;
   const tags=Array.isArray(seo.tags)?seo.tags.map(String).slice(0,30):[];
   return {title:String(opts.title||story?.title||video.title||'Untitled YouTube Video').slice(0,100),description:String(opts.description||desc).slice(0,5000),tags,categoryId:String(opts.categoryId||'27'),selfDeclaredMadeForKids:opts.madeForKids!==false};
 }

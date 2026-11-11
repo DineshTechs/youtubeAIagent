@@ -16,6 +16,8 @@ import {applyOpeningHook} from '../utils/openingRetention.js';
 import {spawn} from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import {optimizeForGeneration} from '../services/youtubeSkills/index.js';
+import {inspectImageText} from '../services/media/imageTextQa.js';
+import {buildChannelProfile,channelProfileSummary} from '../services/channelProfile.js';
 
 let busy=false;
 
@@ -45,7 +47,8 @@ async function traceStage(jobId, stage, input, work, meta={}){
     return output;
   }catch(e){
     const completedAt=new Date();
-    await GenerationJob.findByIdAndUpdate(jobId,{$set:{[`pipelineTrace.$[t].status`]:'FAILED',[`pipelineTrace.$[t].completedAt`]:completedAt,[`pipelineTrace.$[t].durationMs`]:completedAt-startedAt,[`pipelineTrace.$[t].error`]:e.message},$push:{logs:{at:new Date(),message:`Pipeline stage ${stage} failed in ${completedAt-startedAt}ms: ${e.message}`,level:'error'}}},{arrayFilters:[{'t.stageId':stageId}]});
+    const cancelled=e?.code==='JOB_CANCELLED'||e?.message==='JOB_CANCELLED';
+    await GenerationJob.findByIdAndUpdate(jobId,{$set:{[`pipelineTrace.$[t].status`]:cancelled?'CANCELLED':'FAILED',[`pipelineTrace.$[t].completedAt`]:completedAt,[`pipelineTrace.$[t].durationMs`]:completedAt-startedAt,[`pipelineTrace.$[t].error`]:e.message},$push:{logs:{at:new Date(),message:cancelled?`Pipeline stage ${stage} stopped after cancellation in ${completedAt-startedAt}ms.`:`Pipeline stage ${stage} failed in ${completedAt-startedAt}ms: ${e.message}`,level:cancelled?'warning':'error'}}},{arrayFilters:[{'t.stageId':stageId}]});
     throw e;
   }
 }
@@ -99,6 +102,7 @@ async function processJob(job){
     let story=null;
     let series=null;
     let characters=[];
+    let channelProfile=null;
 
     await assertNotCancelled(jobId,job.videoId,attempt);
     if(resumeId){
@@ -108,13 +112,15 @@ async function processJob(job){
       if(!story) throw new Error('The failed video has no associated story.');
       series=await Series.findById(story.seriesId);
       if(!series) throw new Error('The failed video story belongs to a missing series.');
+      channelProfile=buildChannelProfile(series,{...(job.payload||{}),channelProfile:job.payload?.channelProfile||series.channelProfile});
       characters=await Character.find({seriesId:series._id,active:true});
       await updateJob(jobId,5,'RESUMING','Continuing failed video from saved state.');
       await setVideoStatus(video._id,'ASSETS_GENERATING','Resuming from saved assets.','clear',attempt);
     }else{
       await updateJob(jobId,2,'PLANNING','Loading active universe.');
       series=job.payload?.seriesId ? await Series.findById(job.payload.seriesId) : await Series.findOne({active:true});
-      if(!series) throw new Error('No active series. Click Initialize Universe first.');
+      if(!series) throw new Error('No active channel profile. Create or select a channel in Channel / Niche settings.');
+      channelProfile=buildChannelProfile(series,{...(job.payload||{}),channelProfile:job.payload?.channelProfile||series.channelProfile});
       characters=await Character.find({seriesId:series._id,active:true});
       const episodeNumber=(await Story.countDocuments({seriesId:series._id}))+1;
       await updateJob(jobId,8,'SCRIPT_GENERATING','Generating original story.');
@@ -126,12 +132,13 @@ async function processJob(job){
       const rotatedTopic=topicIdeas.length ? topicIdeas[cursor % topicIdeas.length] : null;
       const generationTopic=job.payload?.topic || rotatedTopic || null;
       if(!job.payload?.topic && topicIdeas.length) await Series.findByIdAndUpdate(series._id,{$set:{topicCursor:(cursor+1)%topicIdeas.length}});
-      const storyData=await traceStage(jobId,'STORY_GENERATION',{topic:generationTopic,language:series.language||'English',topicSource:job.payload?.topic?'user':rotatedTopic?'research-rotation':'ai-selected',episodeNumber,seriesId:series._id,niche:series.niche,contentStrategy:series.contentStrategy||null,channelResearch:series.channelResearch?.strategy||null,recentStories,characterCount:characters.length,provider:job.payload?.aiProvider||'active'},()=>aiProvider.generateStory({series,characters,episodeNumber,topic:generationTopic,recentStories,language:job.payload?.language||series.language||'English',format:job.payload?.format||'Short',durationSec:job.payload?.durationSec||55,hookStyle:job.payload?.hookStyle||'Curiosity',audience:job.payload?.audience||series.targetAge||'4-8'}),{provider:job.payload?.aiProvider||'active',topicSource:job.payload?.topic?'user':rotatedTopic?'research-rotation':'ai-selected'});
+      const storyData=await traceStage(jobId,'STORY_GENERATION',{topic:generationTopic,language:series.language||'English',topicSource:job.payload?.topic?'user':rotatedTopic?'research-rotation':'ai-selected',episodeNumber,seriesId:series._id,niche:series.niche,channelProfile:channelProfileSummary(channelProfile),contentStrategy:series.contentStrategy||null,channelResearch:series.channelResearch?.strategy||null,recentStories,characterCount:characters.length,provider:job.payload?.aiProvider||'active'},()=>aiProvider.generateStory({series,channelProfile,characters,episodeNumber,topic:generationTopic,recentStories,language:channelProfile.language,format:job.payload?.format||channelProfile.content.primaryFormat||'Short',durationSec:job.payload?.durationSec||55,hookStyle:job.payload?.hookStyle||channelProfile.content.hookStyle,audience:job.payload?.audience||channelProfile.audience.description}),{provider:job.payload?.aiProvider||'active',topicSource:job.payload?.topic?'user':rotatedTopic?'research-rotation':'ai-selected'});
       await assertNotCancelled(jobId,null);
       await updateJob(jobId,14,'YOUTUBE_OPTIMIZING','Running all 11 YouTube Skills and recording each step.');
       const youtubeOptimization=await traceStage(jobId,'YOUTUBE_OPTIMIZATION',{topic:job.payload?.topic,title:storyData?.title,sceneCount:Array.isArray(storyData?.scenes)?storyData.scenes.length:0},()=>optimizeForGeneration({
         story:storyData,
         series,
+        channelProfile,
         topic:job.payload?.topic,
         jobPayload:job.payload||{},
         onSkillStart:(name)=>updateJob(jobId,14,'YOUTUBE_OPTIMIZING',`Running ${name}...`).catch(()=>{}),
@@ -152,10 +159,10 @@ async function processJob(job){
       storyData.hook=optimizedHookMatchesLanguage?optimizedHook:originalHook;
       const openingHookResult=applyOpeningHook(storyData,requestedLanguage);
       await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:openingHookResult.applied?(openingHookResult.inserted?`Opening hook inserted into spoken scene 1 narration (${requestedLanguage}).`:'Opening hook already present in scene 1 narration.'):`Opening hook not inserted: ${openingHookResult.reason}`,level:openingHookResult.applied?'info':'warning'}}});
-      const qa=await traceStage(jobId,'SCRIPT_QA',{title:storyData?.title,sceneCount:Array.isArray(storyData?.scenes)?storyData.scenes.length:0,openingHook:openingHookResult},()=>aiProvider.qualityCheck({story:storyData,series}),{provider:job.payload?.aiProvider||'active'});
+      const qa=await traceStage(jobId,'SCRIPT_QA',{title:storyData?.title,sceneCount:Array.isArray(storyData?.scenes)?storyData.scenes.length:0,openingHook:openingHookResult},()=>aiProvider.qualityCheck({story:storyData,series,channelProfile}),{provider:job.payload?.aiProvider||'active'});
       await updateJob(jobId,22,'SCRIPT_QA',`Script QA ${qa.pass?'passed':'failed'} (${qa.score ?? 'n/a'}). YouTube Skills: ${youtubeOptimization.successCount}/${youtubeOptimization.totalSkills} completed, ${youtubeOptimization.skippedCount} skipped, ${youtubeOptimization.failedCount} failed.`);
       if(!qa.pass) throw new Error(`Script QA failed: ${(qa.notes||[]).join('; ')}`);
-      story=await Story.create({...storyData,seriesId:series._id,episodeNumber,qa,youtubeOptimization});
+      story=await Story.create({...storyData,seriesId:series._id,episodeNumber,qa,youtubeOptimization,channelProfile});
       video=await Video.create({storyId:story._id,title:story.title,status:'ASSETS_GENERATING',qa,statusHistory:[{status:'ASSETS_GENERATING',message:'Video created; media generation started.',attempt:0,source:'VIDEO'}]});
       await GenerationJob.findByIdAndUpdate(jobId,{$set:{videoId:video._id}});
     }
@@ -179,7 +186,7 @@ async function processJob(job){
     if(aiMedia.visualDirector?.enabled !== false && !useMockImages){
       const visualDirectorProvider=await getActiveProvider();
       try {
-        visualDirectorPlan=await traceStage(jobId,'VISUAL_DIRECTOR',{sceneCount:story.scenes.length,language:series.language||'English',inputScenes:story.scenes.map(s=>({sceneNumber:s.sceneNumber,narration:s.narration,visualPrompt:s.visualPrompt}))},()=>runVisualDirectorPlan(story,series,visualDirectorProvider,aiMedia),{enabled:true,provider:aiMedia.activeProvider||'active'});
+        visualDirectorPlan=await traceStage(jobId,'VISUAL_DIRECTOR',{sceneCount:story.scenes.length,language:series.language||'English',inputScenes:story.scenes.map(s=>({sceneNumber:s.sceneNumber,narration:s.narration,visualPrompt:s.visualPrompt}))},()=>runVisualDirectorPlan(story,series,channelProfile,visualDirectorProvider,aiMedia),{enabled:true,provider:aiMedia.activeProvider||'active'});
       } catch(e) {
         // Visual Director improves prompts but must never prevent video generation.
         // The original scene prompts remain available as a safe fallback.
@@ -190,8 +197,10 @@ async function processJob(job){
       visualDirectorPlan=story.pipelineData?.visualDirectorPlan || null;
     }
     const expectedMode=job.payload?.renderOnly && video.mediaAssetDetails?.[0]?.mode ? video.mediaAssetDetails[0].mode : effectiveMediaMode;
-    const VIDEO_WIDTH=Number(aiMedia.video?.width||1080);
-    const VIDEO_HEIGHT=Number(aiMedia.video?.height||1920);
+    const requestedAspect=String(channelProfile?.visual?.aspectRatio||'9:16');
+    const aspectDimensions=requestedAspect==='16:9'?[1920,1080]:requestedAspect==='1:1'?[1080,1080]:requestedAspect==='3:4'?[1080,1440]:[1080,1920];
+    const VIDEO_WIDTH=aspectDimensions[0];
+    const VIDEO_HEIGHT=aspectDimensions[1];
     const VIDEO_FPS=Number(aiMedia.video?.fps||30);
     const IMAGE_FIT=String(aiMedia.video?.imageFit||'contain-blur');
 
@@ -220,7 +229,7 @@ async function processJob(job){
       return {width:VIDEO_WIDTH,height:VIDEO_HEIGHT,normalized:true,sizeBytes:stat.size,fit:IMAGE_FIT};
     }
 
-    async function runVisualDirectorPlan(storyDoc, seriesDoc, activeProvider, settings){
+    async function runVisualDirectorPlan(storyDoc, seriesDoc, profile, activeProvider, settings){
       const enabled=settings?.visualDirector?.enabled !== false;
       if(!enabled) return null;
       const existing=storyDoc?.pipelineData?.visualDirectorPlan;
@@ -228,11 +237,12 @@ async function processJob(job){
       if(!activeProvider || typeof activeProvider.generateJson!=='function') return null;
       const charactersForPlan=characters.map(c=>({name:c.name,appearance:c.appearance||'',personality:c.personality||''}));
       const input={
-        series:{name:seriesDoc.name,premise:seriesDoc.premise,visualStyle:seriesDoc.visualStyle,targetAge:seriesDoc.targetAge,language:seriesDoc.language},
+        series:{name:seriesDoc.name,premise:seriesDoc.premise,niche:seriesDoc.niche,visualStyle:seriesDoc.visualStyle,language:seriesDoc.language},
+        channelProfile:profile,
         characters:charactersForPlan,
         scenes:storyDoc.scenes.map(s=>({sceneNumber:s.sceneNumber,narration:s.narration,visualPrompt:s.visualPrompt,onScreenText:s.onScreenText,durationSec:s.durationSec}))
       };
-      const instruction=`Act as the visual director for a children's vertical YouTube Short. Translate every narration line into a literal, recognizable moment that a child can immediately understand. The narration is the source of truth: identify the exact named people/animals/objects, what they are doing, where they are, and what changes in this moment. Do not replace specific events with generic smiling characters, decorative scenery, abstract symbols, or unrelated stock-style imagery. Choose a camera shot that clearly shows the narrated action and its important object; vary wide, medium and close-up shots naturally across scenes. Keep recurring characters visually identical. For every scene return sceneNumber, subject, action, setting, importantObjects, emotion, camera, composition and visualPrompt. Make the visualPrompt concrete and self-contained, suitable for a family-friendly 9:16 frame. Reserve the lower 22 percent of the frame as visually quiet subtitle-safe space: no faces, hands, important objects, or key action there; keep the story action in the upper and middle 75 percent. Do not put any text in the image. Return only JSON with shape {"scenes":[...]} and no markdown.`;
+      const instruction=`Act as the visual director for a YouTube video for this channel profile. Translate every narration line into a literal, recognizable visual moment suitable for the channel's niche, audience, tone and selected visual style. The narration is the source of truth: identify the exact named subjects, what they are doing, where they are, and what changes in this moment. Do not replace specific events with generic portraits, decorative scenery, abstract symbols or unrelated stock-style imagery. Choose a camera shot that clearly shows the narrated action and important objects; vary wide, medium and close-up shots naturally. Keep recurring hosts, products, locations or fictional characters visually consistent where applicable. For every scene return sceneNumber, subject, action, setting, importantObjects, emotion, camera, composition and visualPrompt. Make each visualPrompt concrete and self-contained, matching aspect ratio ${profile?.visual?.aspectRatio||'9:16'} and visual style ${profile?.visual?.style||seriesDoc.visualStyle||'cinematic visuals'}. If subtitles are enabled, reserve a visually quiet lower safe area without obscuring the main action. Do not put unrequested text in the image. Do not impose children's-content styling or restrictions unless the channel profile safetyMode is kids-and-family. Return only JSON with shape {"scenes":[...]} and no markdown.`;
       const result=await activeProvider.generateJson(instruction,input,'visual director');
       if(!result || !Array.isArray(result.scenes)) throw new Error('Visual Director returned an invalid scene plan.');
       const byNumber=new Map(result.scenes.map(x=>[Number(x.sceneNumber),x]));
@@ -295,17 +305,17 @@ async function processJob(job){
       const characterContext=characters
         .map(c=>cleanVisualText(`${c.name}, ${c.appearance || 'consistent appearance'}`,160))
         .filter(Boolean).join('; ').slice(0,260);
-      const rawStyle=cleanVisualText(series.visualStyle||'cinematic realistic storybook illustration',120);
+      const rawStyle=cleanVisualText(channelProfile?.visual?.style||series.visualStyle||'cinematic, high-quality visuals',120);
       const style=/(cartoon|chibi|anime|comic|flat|illustrat|kawaii|storybook|clay|2d|3d animation|animated)/i.test(rawStyle)
         ? rawStyle : `${rawStyle}, polished cinematic lighting`;
       const vd=aiMedia.visualDirector||{};
       const continuity=vd.continuity===false
-        ? 'Keep the characters natural and appropriate to this single moment.'
-        : 'Keep recurring characters visually consistent in face, age, hair and clothing.';
-      const noText=vd.avoidTextInImages===false ? '' :
+        ? 'Keep the subjects natural and appropriate to this single moment.'
+        : 'Keep recurring people, hosts, products or fictional characters visually consistent across scenes.';
+      const noText=(vd.avoidTextInImages===false || channelProfile?.visual?.avoidTextInImages===false) ? '' :
         'The picture must contain no writing of any kind: no letters, words, numbers, captions, subtitles, signs, labels, logos, watermarks, interface elements or typography. Any screens or signs must be blank and unmarked.';
       const prompt=[
-        'Create one original vertical 9:16 image for a family-friendly animated story.',
+        `Create one original ${channelProfile?.visual?.aspectRatio||'9:16'} image for a YouTube video in the channel niche ${channelProfile?.niche||series.niche||'General'}.`,
         `Depict this visual moment: ${visualBrief || planVisuals || 'A clear, expressive story moment with a recognizable subject and setting.'}.`,
         planVisuals && planVisuals!==visualBrief ? `Visual details: ${planVisuals}.` : '',
         characterContext ? `Character appearance: ${characterContext}.` : '',
@@ -368,7 +378,7 @@ async function processJob(job){
           if(useMockImages) generatedPath=await generateMockImage(scene.visualPrompt,p);
           else {
             try {
-              generatedPath=await generateImage(usedPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
+              generatedPath=await generateImage(usedPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
             } catch (imageError) {
               const isCloudflareSafetyBlock=selectedImageProvider==='cloudflare' && /Cloudflare Workers AI image generation failed \(400\)/i.test(String(imageError?.message||'')) && /(NSFW|8007|prompt contains)/i.test(String(imageError?.message||''));
               if(!isCloudflareSafetyBlock) throw imageError;
@@ -378,9 +388,9 @@ async function processJob(job){
               // If the scene itself is unsuitable, the second request will be rejected.
               const rewriteProvider=await getActiveProvider();
               if(!rewriteProvider || typeof rewriteProvider.generateJson!=='function') {
-                throw new Error(`Cloudflare rejected scene ${sceneNumber} as NSFW (code 8007), and no AI provider is available to create a safer family-friendly prompt. Original error: ${imageError.message}`);
+                throw new Error(`Cloudflare rejected scene ${sceneNumber} as NSFW (code 8007), and no AI provider is available to create a policy-compliant channel-aware prompt. Original error: ${imageError.message}`);
               }
-              const rewriteInstruction='You are a safety-conscious visual prompt editor for a children’s educational video. Rewrite the supplied scene into ONE clearly family-friendly, age-appropriate image prompt. Preserve the harmless story meaning, characters, setting and benign action. Remove ambiguous wording and unnecessary sensitive details. Do not disguise, euphemize, or transform prohibited content to evade a safety filter. If the underlying scene cannot be represented safely for children, return {"safe":false,"visualPrompt":""}. Otherwise return {"safe":true,"visualPrompt":"..."}. Output only JSON.';
+              const rewriteInstruction='You are a safety-conscious visual prompt editor. Rewrite the supplied scene into ONE policy-compliant image prompt suitable for the channel profile and its audience. Preserve the legitimate story meaning, subjects, setting and benign action. Remove ambiguous wording and unnecessary sensitive details. Do not disguise, euphemize, or transform prohibited content to evade a safety filter. If the underlying scene cannot be represented safely, return {"safe":false,"visualPrompt":""}. Otherwise return {"safe":true,"visualPrompt":"..."}. Output only JSON.';
               const rewriteInput={sceneNumber,narration:limitPromptText(scene.narration,500),sourceVisualPrompt:limitPromptText(scene.visualPrompt,850),characterDescriptions:characters.map(c=>({name:c.name,appearance:limitPromptText(c.appearance||'',180)})),rejectedImagePrompt:limitPromptText(sceneImagePrompt,1600)};
               const rewritten=await rewriteProvider.generateJson(rewriteInstruction,rewriteInput,'Cloudflare safe image prompt rewrite');
               if(rewritten?.safe!==true || !String(rewritten?.visualPrompt||'').trim()) {
@@ -388,8 +398,8 @@ async function processJob(job){
               }
               usedPrompt=limitPromptText(rewritten.visualPrompt,1200);
               safetyRewriteUsed=true;
-              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: Cloudflare safety filter rejected the original image prompt. Retrying once with a family-friendly rewrite; safety filters remain enabled.`,level:'warning'}}});
-              generatedPath=await generateImage(usedPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: Cloudflare safety filter rejected the original image prompt. Retrying once with a policy-compliant channel-aware rewrite; safety filters remain enabled.`,level:'warning'}}});
+              generatedPath=await generateImage(usedPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
             }
           }
 
@@ -403,7 +413,33 @@ async function processJob(job){
 
           // Never mark the stage complete until the physical file exists and passes
           // the image signature/size validation.
-          const normalized=await normalizeSceneImage(p);
+          let normalized=await normalizeSceneImage(p);
+          // V1.4.2: OCR quality gate. Always reject recognizable internal workflow
+          // instructions; optionally reject any substantial readable text in strict mode.
+          let imageTextQa={checked:false,suspicious:false,reason:'not_checked'};
+          try {
+            const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'').toLowerCase()==='true';
+            for(let qaAttempt=0;qaAttempt<=2;qaAttempt++){
+              imageTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:4});
+              if(!imageTextQa.suspicious) break;
+              if(qaAttempt===2){
+                throw new Error(`Scene ${sceneNumber} still contains unwanted text after 2 regeneration attempts: ${imageTextQa.reason}. OCR: ${imageTextQa.text.slice(0,220)}`);
+              }
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR detected unwanted image text (${imageTextQa.reason}, confidence ${Math.round(imageTextQa.confidence)}%). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
+              const retryPrompt=`${usedPrompt} IMPORTANT: The previous image incorrectly contained written text. Create a clean image with absolutely no visible letters, words, numbers, captions, subtitles, signs, labels, logos, watermarks or typography. Keep all screens and signs blank.`;
+              const retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
+              if(retryPath && path.resolve(String(retryPath))!==path.resolve(p)) await fs.copyFile(String(retryPath),p);
+              usedPrompt=retryPrompt;
+              normalized=await normalizeSceneImage(p);
+            }
+            imageTextQa.checked=true;
+            if(!imageTextQa.suspicious && imageTextQa.hasText){
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR found possible readable text but no production-instruction leakage; accepted in non-strict mode.`,level:'info'}}});
+            }
+          } catch(ocrError) {
+            if(String(ocrError?.message||'').includes('still contains unwanted text')) throw ocrError;
+            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR inspection unavailable (${ocrError.message}). Continuing with image prompt safeguards; install dependencies and verify OCR runtime.`,level:'warning'}}});
+          }
           const asset=await validateImageAsset(p,expectedMode,sceneNumber);
           return {
             path:p,
@@ -462,7 +498,7 @@ async function processJob(job){
         if(!ready){
           await fs.rm(sceneAudio,{force:true}).catch(()=>{});
           if(mediaSettings.mockMode) await generateMockSpeech(story.scenes[i].narration,sceneAudio);
-          else await generateSpeech(story.scenes[i].narration,sceneAudio,series.language||'English');
+          else await generateSpeech(story.scenes[i].narration,sceneAudio,channelProfile?.narration?.language||series.language||'English',channelProfile?.narration||{});
         }
         const duration=await getAudioDuration(sceneAudio);
         sceneAudioFiles.push(sceneAudio);
@@ -485,7 +521,7 @@ async function processJob(job){
     await setVideoStatus(video._id,'VIDEO_RENDERING','Rendering video.','clear',attempt);
     await updateJob(jobId,65,'VIDEO_RENDERING','Rendering vertical MP4 with FFmpeg.');
     let lastProgress=-1;
-    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:aiMedia.video?.subtitlesEnabled??true,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',onProgress:p=>{
+    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:aiMedia.video?.subtitlesEnabled??true,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
       const progress=65+Math.round(p*.25);
       if(progress===lastProgress)return;
       lastProgress=progress;
@@ -497,16 +533,17 @@ async function processJob(job){
     await setVideoStatus(video._id,'VIDEO_QA','Checking rendered video.','keep',attempt);
     await updateJob(jobId,94,'VIDEO_QA','Running final file checks.');
     const qaReport=await traceStage(jobId,'FINAL_QA',{videoPath:rendered.videoPath,durationSec:rendered.durationSec,sceneCount:sceneFiles.length},async()=>{
-      const report=await runVideoQualityAssurance({videoPath:rendered.videoPath,scenePaths:sceneFiles,audioPath:audio,subtitlePath:srt,expectedDurationSec:rendered.durationSec,expectedSceneCount:story.scenes.length,sceneDurations:rendered.sceneDurations,expectedOpeningHook:story.hook||''});
+      const report=await runVideoQualityAssurance({videoPath:rendered.videoPath,scenePaths:sceneFiles,audioPath:audio,subtitlePath:srt,expectedDurationSec:rendered.durationSec,expectedSceneCount:story.scenes.length,sceneDurations:rendered.sceneDurations,expectedOpeningHook:story.hook||'',expectedAspectRatio:channelProfile?.visual?.aspectRatio||'9:16'});
       await Video.findByIdAndUpdate(video._id,{$set:{qa:report,visualReview:{}}});
       if(!report.pass) throw new Error(`Video technical QA failed: ${report.checks.filter(x=>x.status==='FAIL').map(x=>`${x.name}: ${x.message}`).join('; ')}`);
       return report;
-    },{qaVersion:'1.4',checks:['file','full-decode','portrait-aspect','resolution','duration','black-frames','audio-silence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','scene-assets','subtitle-file','manual-visual-review']});
+    },{qaVersion:'1.5.0',checks:['file','full-decode','profile-aspect-ratio','resolution','duration','black-frames','audio-silence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','scene-assets','subtitle-file','manual-visual-review']});
     await setVideoStatus(video._id,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Complete visual review before approval.`,'clear',attempt);
     await updateJob(jobId,100,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Video ready for visual review.`,'COMPLETED',{completedAt:new Date(),lastHeartbeatAt:new Date()});
   }catch(e){
     if(e.code==='JOB_CANCELLED'||e.message==='JOB_CANCELLED'){
-      await GenerationJob.findByIdAndUpdate(jobId,{$set:{status:'CANCELLED',step:'CANCELLED',cancelledAt:new Date(),completedAt:new Date()},$push:{logs:{at:new Date(),message:'Job stopped because cancellation was requested.',level:'warning'}}});
+      await GenerationJob.findByIdAndUpdate(jobId,{$set:{status:'CANCELLED',step:'CANCELLED',cancelRequested:true,cancelledAt:new Date(),completedAt:new Date(),lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),message:'Job stopped because cancellation was requested; FFmpeg child process has exited.',level:'warning'}}});
+      if(video?._id) await setVideoStatus(video._id,'CANCELLED','Generation cancelled. Saved scenes and narration are available to continue.','keep',attempt);
     }else{
       await GenerationJob.findByIdAndUpdate(jobId,{$set:{status:'FAILED',error:e.message,failedAt:new Date(),lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),message:e.message,level:'error'}}});
       if(video?._id) await setVideoStatus(video._id,'FAILED',e.message,'set',attempt);
@@ -515,6 +552,15 @@ async function processJob(job){
 }
 
 export function startWorker(){
+  // Recover cancellation requests persisted by older builds that marked the
+  // video CANCELLED but left its GenerationJob RUNNING during FFmpeg rendering.
+  (async()=>{
+    const interrupted=await GenerationJob.find({status:'RUNNING',cancelRequested:true}).select('_id videoId retryCount').lean();
+    for(const item of interrupted){
+      await GenerationJob.findByIdAndUpdate(item._id,{$set:{status:'CANCELLED',step:'CANCELLED',cancelledAt:new Date(),completedAt:new Date()},$push:{logs:{at:new Date(),message:'Recovered a pending cancellation request during backend startup.',level:'warning'}}});
+      if(item.videoId) await setVideoStatus(item.videoId,'CANCELLED','Generation cancelled during backend restart. Saved assets can be resumed.','keep',Number(item.retryCount||0));
+    }
+  })().catch(error=>console.error('Worker cancellation recovery failed:',error));
   setInterval(async()=>{
     if(busy)return;
     const job=await GenerationJob.findOneAndUpdate(
