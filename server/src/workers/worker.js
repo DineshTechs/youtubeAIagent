@@ -312,8 +312,9 @@ async function processJob(job){
       const continuity=vd.continuity===false
         ? 'Keep the subjects natural and appropriate to this single moment.'
         : 'Keep recurring people, hosts, products or fictional characters visually consistent across scenes.';
-      const noText=(vd.avoidTextInImages===false || channelProfile?.visual?.avoidTextInImages===false) ? '' :
-        'The picture must contain no writing of any kind: no letters, words, numbers, captions, subtitles, signs, labels, logos, watermarks, interface elements or typography. Any screens or signs must be blank and unmarked.';
+      // Keep all text, logos and branding in the editable video layer, never in generated artwork.
+      // This is intentionally enforced even if an older profile allowed text in images.
+      const noText='ABSOLUTELY NO VISIBLE TEXT OR GRAPHIC BRANDING: no letters, words, numbers, pseudo-writing, gibberish, fake glyphs, text-like strokes, decorative marks resembling writing, captions, subtitles, typography, labels, signage, logos, icons resembling platform brands, watermarks, signatures, QR codes, UI controls, app interfaces or decorative symbols. Screens, books, signs, packaging and labels must be blank, plain and unmarked. Do not invent text-like marks. Render a clean photorealistic/illustrated scene only. All captions and titles are added separately by the video editor.';
       const prompt=[
         `Create one original ${channelProfile?.visual?.aspectRatio||'9:16'} image for a YouTube video in the channel niche ${channelProfile?.niche||series.niche||'General'}.`,
         `Depict this visual moment: ${visualBrief || planVisuals || 'A clear, expressive story moment with a recognizable subject and setting.'}.`,
@@ -357,6 +358,22 @@ async function processJob(job){
         : ((job.payload?.renderOnly || resumeId) && savedAsset?.path ? savedAsset.path : canonicalPath);
       let reusable=false;
       try{const asset=await validateImageAsset(p,expectedMode,sceneNumber); reusable=asset.valid&&!forceThisScene;}catch{}
+      // Previously generated assets must pass the same OCR gate before reuse.
+      if(reusable && expectedMode==='real'){
+        try{
+          const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'true').toLowerCase()!=='false';
+          const priorTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
+          if(priorTextQa.suspicious){
+            reusable=false;
+            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: saved image failed the updated text-integrity check (${priorTextQa.reason}, confidence ${Math.round(priorTextQa.confidence)}%). Regenerating instead of reusing it.`,level:'warning'}}});
+          }
+        }catch(ocrError){
+          // Fail closed for real images: an asset that cannot be inspected must
+          // not silently bypass the clean-artwork gate. Regenerate and inspect it.
+          reusable=false;
+          await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: saved image could not pass OCR validation (${ocrError.message}); it will not be reused.`,level:'warning'}}});
+        }
+      }
       if(!reusable){
         const generated=await traceStage(jobId,`SCENE_${i+1}_IMAGE`,{
           sceneNumber,
@@ -418,15 +435,15 @@ async function processJob(job){
           // instructions; optionally reject any substantial readable text in strict mode.
           let imageTextQa={checked:false,suspicious:false,reason:'not_checked'};
           try {
-            const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'').toLowerCase()==='true';
+            const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'true').toLowerCase()!=='false';
             for(let qaAttempt=0;qaAttempt<=2;qaAttempt++){
-              imageTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:4});
+              imageTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
               if(!imageTextQa.suspicious) break;
               if(qaAttempt===2){
                 throw new Error(`Scene ${sceneNumber} still contains unwanted text after 2 regeneration attempts: ${imageTextQa.reason}. OCR: ${imageTextQa.text.slice(0,220)}`);
               }
               await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR detected unwanted image text (${imageTextQa.reason}, confidence ${Math.round(imageTextQa.confidence)}%). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
-              const retryPrompt=`${usedPrompt} IMPORTANT: The previous image incorrectly contained written text. Create a clean image with absolutely no visible letters, words, numbers, captions, subtitles, signs, labels, logos, watermarks or typography. Keep all screens and signs blank.`;
+              const retryPrompt=`${usedPrompt} STRICT CLEAN-IMAGE CORRECTION: The previous image contained unwanted text or marks. Regenerate the same scene and composition with absolutely no visible text, pseudo-writing, letters, numbers, captions, subtitles, signs, labels, logos, watermarks, signatures, symbols or interface elements. Keep all screens, books, signs and packaging blank. Do not replace text with fake glyphs, scribbles, pseudo-letters, decorative marks or rows of tiny symbols. Avoid close-ups of printed material. Use blank, unmarked surfaces with natural texture instead. Captions will be added separately in editing.`;
               const retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
               if(retryPath && path.resolve(String(retryPath))!==path.resolve(p)) await fs.copyFile(String(retryPath),p);
               usedPrompt=retryPrompt;
@@ -437,8 +454,10 @@ async function processJob(job){
               await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR found possible readable text but no production-instruction leakage; accepted in non-strict mode.`,level:'info'}}});
             }
           } catch(ocrError) {
+            // Never accept a newly generated real image when OCR is unavailable:
+            // that would turn an inspection outage into an unnoticed text leak.
             if(String(ocrError?.message||'').includes('still contains unwanted text')) throw ocrError;
-            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR inspection unavailable (${ocrError.message}). Continuing with image prompt safeguards; install dependencies and verify OCR runtime.`,level:'warning'}}});
+            throw new Error(`Scene ${sceneNumber} image integrity check could not complete. The image was not approved. OCR error: ${ocrError.message}`);
           }
           const asset=await validateImageAsset(p,expectedMode,sceneNumber);
           return {
@@ -537,7 +556,7 @@ async function processJob(job){
       await Video.findByIdAndUpdate(video._id,{$set:{qa:report,visualReview:{}}});
       if(!report.pass) throw new Error(`Video technical QA failed: ${report.checks.filter(x=>x.status==='FAIL').map(x=>`${x.name}: ${x.message}`).join('; ')}`);
       return report;
-    },{qaVersion:'1.5.0',checks:['file','full-decode','profile-aspect-ratio','resolution','duration','black-frames','audio-silence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','scene-assets','subtitle-file','manual-visual-review']});
+    },{qaVersion:'1.6.1',checks:['file','full-decode','profile-aspect-ratio','resolution','duration','black-frames','audio-silence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','3-second-hook-delivery','opening-visual-pacing','scene-assets','subtitle-file','manual-visual-review']});
     await setVideoStatus(video._id,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Complete visual review before approval.`,'clear',attempt);
     await updateJob(jobId,100,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Video ready for visual review.`,'COMPLETED',{completedAt:new Date(),lastHeartbeatAt:new Date()});
   }catch(e){

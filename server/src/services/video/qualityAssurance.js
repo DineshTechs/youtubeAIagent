@@ -3,6 +3,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import {env} from '../../config/env.js';
+import {findHookCompletionTime, analyzeHookText} from '../../utils/retentionAnalysis.js';
 
 const ffmpegPath = env.ffmpegPath || ffmpegStatic || 'ffmpeg';
 function runFfmpeg(args){
@@ -106,16 +107,39 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
       const srtText=await fs.readFile(subtitlePath,'utf8');
       const firstCue=srtText.match(/(?:^|\n)\s*\d+\s*\n\s*(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
       const firstStart=firstCue?seconds(firstCue[1].replace(',', '.')):null;
-      const normalizedSrt=srtText.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
       const normalizedHook=String(expectedOpeningHook||'').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
       const startsAtZero=firstStart!=null&&firstStart<=0.15;
-      const hookFound=!normalizedHook||normalizedSrt.includes(normalizedHook);
+      const hookTiming=findHookCompletionTime(srtText,expectedOpeningHook);
+      const hookFound=!normalizedHook||(hookTiming.found && hookTiming.matchRatio>=0.85);
       const openingCaptionOk=startsAtZero&&hookFound;
-      checks.push(check('Opening hook caption',openingCaptionOk?'PASS':'WARN',openingCaptionOk?(normalizedHook?'Opening captions start at 00:00 and contain the story hook.':'Opening captions start at 00:00.'):`Opening captions ${!startsAtZero?'do not start at 00:00.':''}${!hookFound?' The expected hook text was not found in the subtitle file.':''}`,{firstCueStartSec:firstStart,startsAtZero,hookExpected:Boolean(normalizedHook),hookFound}));
+      checks.push(check('Opening hook caption',openingCaptionOk?'PASS':'WARN',openingCaptionOk?(normalizedHook?'Opening captions start at 00:00 and contain the story hook.':'Opening captions start at 00:00.'):`Opening captions ${!startsAtZero?'do not start at 00:00.':''}${!hookFound?' The expected hook text was not found in the subtitle file.':''}`,{firstCueStartSec:firstStart,startsAtZero,hookExpected:Boolean(normalizedHook),hookFound,hookMatchRatio:hookTiming.matchRatio??0}));
+      if(normalizedHook){
+        const hookTextAnalysis=analyzeHookText(expectedOpeningHook);
+        checks.push(check('Opening hook length',hookTextAnalysis.concise?'PASS':'WARN',hookTextAnalysis.concise?`Opening hook contains ${hookTextAnalysis.wordCount} words.`:`Opening hook contains ${hookTextAnalysis.wordCount} words; aim for 3-10 concise spoken words.`,hookTextAnalysis));
+        const hookWithin3=hookTiming.found&&hookTiming.endWithin3Sec;
+        checks.push(check('3-second hook delivery',hookWithin3?'PASS':'WARN',hookWithin3?`The full opening hook is captioned by ${hookTiming.endSec.toFixed(2)} seconds.`:hookTiming.found?`The full hook completes at ${hookTiming.endSec.toFixed(2)} seconds; aim to deliver it within 3 seconds.`:'Could not locate the complete hook in sequential captions.',{hookFound:hookTiming.found,hookCompletionSec:hookTiming.endSec,within3Seconds:hookWithin3}));
+      }
     }catch(error){checks.push(check('Opening hook caption','WARN',`Could not verify the opening subtitle/hook: ${error.message}`));}
   }
 
   const timelineDurations=Array.isArray(sceneDurations)?sceneDurations.map(Number).filter(x=>Number.isFinite(x)&&x>0):[];
+  // V1.6: assess opening pacing from the measured scene timeline. This is a
+  // warning-only heuristic: intentional slow scenes should not fail rendering.
+  if(timelineDurations.length){
+    let elapsed=0,openingSceneCount=0;
+    for(const duration of timelineDurations){
+      if(elapsed>=15) break;
+      openingSceneCount++;
+      elapsed+=duration;
+    }
+    const openingDurations=timelineDurations.slice(0,openingSceneCount);
+    const longestOpeningScene=Math.max(...openingDurations);
+    const shortOpeningScenes=openingDurations.filter(x=>x<1.25).length;
+    let pacingStatus='PASS',pacingMessage=`${openingSceneCount} scene${openingSceneCount===1?'':'s'} cover the first ${Math.min(15,elapsed).toFixed(1)} seconds.`;
+    if(longestOpeningScene>7){pacingStatus='WARN';pacingMessage=`An opening scene lasts ${longestOpeningScene.toFixed(1)} seconds. Add a relevant visual beat or action before 7 seconds; do not cut or speed up narration to force a shorter scene.`;}
+    else if(openingSceneCount>=4&&shortOpeningScenes>=Math.ceil(openingSceneCount*.75)){pacingStatus='WARN';pacingMessage='Most opening scenes are shorter than 1.25 seconds; check that the cuts do not feel rushed.';}
+    checks.push(check('Opening visual pacing',pacingStatus,pacingMessage,{openingSceneCount,longestOpeningSceneSec:Number(longestOpeningScene.toFixed(2)),shortOpeningSceneCount:shortOpeningScenes,openingSceneDurations:openingDurations}));
+  }
   if(timelineDurations.length){
     const openingWindow=Math.min(15,Number(durationSec)||15);
     let openingSceneCoverage=0;
@@ -144,4 +168,4 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
   checks.push(check('Story suitability','REVIEW','Human review required: check age suitability, story clarity and originality.'));
   return report(checks,{durationSec,width,height,sizeBytes:stat.size,videoPath,ffmpegPath:path.basename(ffmpegPath)});
 }
-function report(checks,meta={}){const failures=checks.filter(x=>x.status==='FAIL').length,warnings=checks.filter(x=>x.status==='WARN').length,passed=checks.filter(x=>x.status==='PASS').length,score=Math.max(0,Math.round(passed/(passed+warnings+failures||1)*100));return {version:'1.5.0',pass:failures===0,score,summary:{passed,warnings,failures,manualReviews:checks.filter(x=>x.status==='REVIEW').length},checks,meta,ranAt:new Date()};}
+function report(checks,meta={}){const failures=checks.filter(x=>x.status==='FAIL').length,warnings=checks.filter(x=>x.status==='WARN').length,passed=checks.filter(x=>x.status==='PASS').length,score=Math.max(0,Math.round(passed/(passed+warnings+failures||1)*100));const retentionChecks=checks.filter(x=>/opening|hook|pacing/i.test(x.name));const retentionPass=retentionChecks.filter(x=>x.status==='PASS').length;const retentionWarnings=retentionChecks.filter(x=>x.status==='WARN').length;const retentionScore=Math.round(retentionPass/(retentionPass+retentionWarnings||1)*100);return {version:'1.6.1',pass:failures===0,score,retention:{score:retentionScore,checks:retentionChecks.length,passed:retentionPass,warnings:retentionWarnings},summary:{passed,warnings,failures,manualReviews:checks.filter(x=>x.status==='REVIEW').length},checks,meta,ranAt:new Date()};}
