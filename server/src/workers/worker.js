@@ -268,54 +268,55 @@ async function processJob(job){
       return (boundary>Math.floor(max*0.72)?cut.slice(0,boundary):cut).trim();
     }
     function buildSceneImagePrompt(scene,index,visualPlan=null){
-      const characterContext=characters.map(c=>`${c.name}: ${limitPromptText(c.appearance || 'consistent appearance',180)}`).join('; ');
-      const narration=limitPromptText(scene.narration,520);
-      const visualBrief=limitPromptText(scene.visualPrompt,850);
+      // V1.4.1: send a visual-only brief to image models. Never expose production
+      // directives, narration labels, scene numbers, QA text or workflow metadata.
+      const cleanVisualText=(value,max=420)=>{
+        let text=String(value||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
+        const metaPatterns=[
+          /\bmust\s+show\b/ig, /\bshow\s+this\s+exact\b/ig,
+          /\bexact\s+scene\b/ig, /\bnarration\s+continuity\b/ig,
+          /\bscene\s*\#?\s*\d+\b/ig, /\bvisual\s+director\b/ig,
+          /\bshot\s+plan\b/ig, /\bproduction\s+instruction[s]?\b/ig,
+          /\bdo\s+not\s+forget\b/ig, /\bimage\s+prompt\b/ig,
+          /\boutput\s+only\b/ig, /\bstrictly\s+avoid\b/ig
+        ];
+        for(const pattern of metaPatterns) text=text.replace(pattern,' ');
+        text=text.replace(/\b(?:SUBJECT|ACTION|SETTING|IMPORTANT OBJECTS|EMOTION|CAMERA|COMPOSITION|NARRATION CONTEXT|CHARACTER CONTINUITY)\s*:/gi,' ');
+        text=text.replace(/\s+/g,' ').replace(/^[\s:;,.!-]+|[\s:;,.!-]+$/g,'').trim();
+        return text.length<=max?text:text.slice(0,max).replace(/\s+\S*$/,'').trim();
+      };
+
       const plan=visualPlan?.scenes?.find(x=>Number(x.sceneNumber)===Number(scene.sceneNumber||index+1));
-      const planDetails=plan ? `SUBJECT: ${limitPromptText(plan.subject,300)}\nACTION: ${limitPromptText(plan.action,350)}\nSETTING: ${limitPromptText(plan.setting,300)}\nIMPORTANT OBJECTS: ${limitPromptText(plan.importantObjects,350)}\nEMOTION: ${limitPromptText(plan.emotion,220)}\nCAMERA: ${limitPromptText(plan.camera,300)}\nCOMPOSITION: ${limitPromptText(plan.composition,350)}` : '';
-      const chars=limitPromptText(characterContext,300);
-      const rawStyle=String(series.visualStyle||'').trim();
-      const safeStyle=/(cartoon|chibi|anime|comic|flat|illustrat|kawaii|storybook|clay|2d|3d animation|animated)/i.test(rawStyle)
-        ? 'cinematic realistic, natural proportions, expressive faces, realistic textures, believable lighting'
-        : (rawStyle || 'cinematic realistic, natural proportions, realistic textures, believable lighting');
-
-      // Keep the image prompt compact and visual. Long instruction-heavy prompts
-      // make image models drift toward generic scenes. The visual brief is the
-      // concrete shot plan; narration is used as a semantic cross-check.
+      const visualBrief=cleanVisualText(scene.visualPrompt,650);
+      const planVisuals=plan
+        ? [plan.subject,plan.action,plan.setting,plan.importantObjects,plan.emotion,plan.camera,plan.composition]
+            .map(v=>cleanVisualText(v,180)).filter(Boolean).join('. ')
+        : '';
+      const characterContext=characters
+        .map(c=>cleanVisualText(`${c.name}, ${c.appearance || 'consistent appearance'}`,160))
+        .filter(Boolean).join('; ').slice(0,260);
+      const rawStyle=cleanVisualText(series.visualStyle||'cinematic realistic storybook illustration',120);
+      const style=/(cartoon|chibi|anime|comic|flat|illustrat|kawaii|storybook|clay|2d|3d animation|animated)/i.test(rawStyle)
+        ? rawStyle : `${rawStyle}, polished cinematic lighting`;
       const vd=aiMedia.visualDirector||{};
-      const composition=vd.eyeCatching===false ? 'clear readable composition, natural camera angle, good depth' : 'high-impact eye-catching composition, strong focal point, dynamic cinematic camera angle, foreground/midground/background depth, dramatic but natural lighting, attractive contrast';
-      const continuity=vd.continuity===false ? 'Match the scene brief without requiring cross-scene character continuity.' : 'Maintain exact recurring character appearance across scenes: face, age, hair, clothing, colors and proportions.';
-      const realism=vd.realism===false ? 'cinematic visual style, polished detailed rendering' : 'photorealistic cinematic film still, natural anatomy, realistic textures, physically believable lighting';
-      const noText=vd.avoidTextInImages===false ? '' : 'No captions, subtitles, logos, watermarks or written text in the generated image.';
-      const prompt=`Vertical 9:16 cinematic story frame for scene ${index+1}.
-
-MUST SHOW THIS EXACT SCENE:
-${visualBrief}
-
-VISUAL DIRECTOR SHOT PLAN:
-${planDetails || 'Follow the exact visual brief and narration literally.'}
-
-NARRATION CONTEXT:
-${narration}
-
-CHARACTER CONTINUITY:
-${chars || 'Keep all recurring characters visually consistent with earlier scenes.'}
-${continuity}
-
-Make the visual literally match the scene above: show the named subject(s), the specific physical action, the important object(s), the location and the emotion at the same moment. Translate abstract narration into a concrete visual that directly represents what is being said. Do not substitute a generic character portrait or unrelated stock image.
-
-COMPOSITION:
-One single coherent, story-specific scene, exact narrated subject and action clearly visible, expressive natural body language, recognizable setting and relevant props, crisp focal subject, visually rich but not distracting environment. ${composition}. Keep the main subject and narrated action in the upper-middle 75 percent of the frame. Leave the lower 22 percent visually quiet and low-detail for bottom-centered subtitles; do not place faces, hands, key props or important action in that lower area.
-
-STYLE:
-${limitPromptText(safeStyle,220)}
-${realism}
-
-STRICTLY AVOID:
-random subjects, generic poses, unrelated backgrounds, symbolic images that do not represent the narration, collage, split screen, montage, UI screenshot unless the scene explicitly requires a screen/device. ${noText}
-
-Output only the image. ${realism}, highly detailed, 9:16 portrait.`;
-      return limitPromptText(prompt,2000);
+      const continuity=vd.continuity===false
+        ? 'Keep the characters natural and appropriate to this single moment.'
+        : 'Keep recurring characters visually consistent in face, age, hair and clothing.';
+      const noText=vd.avoidTextInImages===false ? '' :
+        'The picture must contain no writing of any kind: no letters, words, numbers, captions, subtitles, signs, labels, logos, watermarks, interface elements or typography. Any screens or signs must be blank and unmarked.';
+      const prompt=[
+        'Create one original vertical 9:16 image for a family-friendly animated story.',
+        `Depict this visual moment: ${visualBrief || planVisuals || 'A clear, expressive story moment with a recognizable subject and setting.'}.`,
+        planVisuals && planVisuals!==visualBrief ? `Visual details: ${planVisuals}.` : '',
+        characterContext ? `Character appearance: ${characterContext}.` : '',
+        continuity,
+        `Visual style: ${style}.`,
+        'Use one coherent scene, a clear main subject, natural anatomy, expressive body language and a recognizable setting. Show the described action rather than a generic portrait.',
+        'Keep important faces, hands and story objects in the upper and middle portions of the frame.',
+        noText,
+        'Generate only the image; do not reproduce any instructions or metadata.'
+      ].filter(Boolean).join(' ');
+      return cleanVisualText(prompt,1850);
     }
     const validateImageAsset=async(file,mode,sceneNumber)=>{
       let st; try{st=await fs.stat(file);}catch{throw new Error(`Scene ${sceneNumber} image asset is missing: ${file}`);}

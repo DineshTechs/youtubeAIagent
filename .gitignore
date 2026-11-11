@@ -1,8 +1,7 @@
 node_modules/
 .env
 dist/
-storage/*
-!storage/.gitkeep
+server/storage/
 *.log
-workingv1.2.zip
-workingv1.3.zip
+# workingv1.2.zip
+# workingv1.3.zip
