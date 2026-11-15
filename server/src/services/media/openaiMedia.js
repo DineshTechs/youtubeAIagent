@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import { env } from '../../config/env.js';
 import { getMediaSettings } from '../ai/index.js';
+import { fitPromptToProvider } from '../../utils/imagePrompt.js';
 
 // Use the same deterministic FFmpeg resolution as the video renderer.
 // Do not rely on a system PATH entry on Windows.
@@ -133,7 +134,7 @@ async function cloudflareImage(prompt, outFile) {
   const settings = await getMediaSettings();
   const model = cloudflareModel(settings.imageModel || env.cloudflareImageModel);
   const url = model.startsWith('https://') ? model : `https://api.cloudflare.com/client/v4/accounts/${env.cloudflareAccountId}/ai/run/${model}`;
-  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${env.cloudflareApiToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, steps: 8 }) });
+  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${env.cloudflareApiToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: fitPromptToProvider(prompt, 'cloudflare'), steps: 8 }) });
   const contentType = r.headers.get('content-type') || '';
   if (!r.ok) throw new Error(`Cloudflare Workers AI image generation failed (${r.status}) [model=${model}]: ${(await r.text()).slice(0, 1000)}`);
   if (contentType.includes('application/json')) {
