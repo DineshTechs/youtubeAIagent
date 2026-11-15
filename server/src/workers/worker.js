@@ -20,6 +20,7 @@ import {inspectImageText} from '../services/media/imageTextQa.js';
 import {buildChannelProfile,channelProfileSummary} from '../services/channelProfile.js';
 import {traceSafe} from '../utils/traceSafe.js';
 import {recoverInterruptedJobs,HEARTBEAT_INTERVAL_MS} from './recovery.js';
+import {buildCleanImageRetryPrompt,promptLimitFor} from '../utils/imagePrompt.js';
 
 let busy=false;
 let currentJobId=null;
@@ -354,7 +355,7 @@ async function processJob(job){
           const priorTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
           if(priorTextQa.suspicious){
             reusable=false;
-            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: saved image failed the updated text-integrity check (${priorTextQa.reason}, confidence ${Math.round(priorTextQa.confidence)}%). Regenerating instead of reusing it.`,level:'warning'}}});
+            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: saved image failed the updated text-integrity check (${priorTextQa.reason}, confidence ${Math.round(priorTextQa.confidence)}%, OCR read: "${String(priorTextQa.text||'').slice(0,80)}"). Regenerating instead of reusing it.`,level:'warning'}}});
           }
         }catch(ocrError){
           // Fail closed for real images: an asset that cannot be inspected must
@@ -425,15 +426,20 @@ async function processJob(job){
           let imageTextQa={checked:false,suspicious:false,reason:'not_checked'};
           try {
             const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'true').toLowerCase()!=='false';
+            const cleanRetryBasePrompt=usedPrompt;
             for(let qaAttempt=0;qaAttempt<=2;qaAttempt++){
               imageTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
               if(!imageTextQa.suspicious) break;
               if(qaAttempt===2){
                 throw new Error(`Scene ${sceneNumber} still contains unwanted text after 2 regeneration attempts: ${imageTextQa.reason}. OCR: ${imageTextQa.text.slice(0,220)}`);
               }
-              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR detected unwanted image text (${imageTextQa.reason}, confidence ${Math.round(imageTextQa.confidence)}%). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
-              const retryPrompt=`${usedPrompt} STRICT CLEAN-IMAGE CORRECTION: The previous image contained unwanted text or marks. Regenerate the same scene and composition with absolutely no visible text, pseudo-writing, letters, numbers, captions, subtitles, signs, labels, logos, watermarks, signatures, symbols or interface elements. Keep all screens, books, signs and packaging blank. Do not replace text with fake glyphs, scribbles, pseudo-letters, decorative marks or rows of tiny symbols. Avoid close-ups of printed material. Use blank, unmarked surfaces with natural texture instead. Captions will be added separately in editing.`;
-              const retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR detected unwanted image text (${imageTextQa.reason}, confidence ${Math.round(imageTextQa.confidence)}%, OCR read: "${String(imageTextQa.text||'').slice(0,80)}"). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
+              // Rebuild from the original scene prompt (no stacking) and keep within the
+              // provider's prompt limit; the clean-image correction is placed first.
+              const retryPrompt=buildCleanImageRetryPrompt(cleanRetryBasePrompt,{maxChars:promptLimitFor(selectedImageProvider)});
+              let retryPath;
+              try{ retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize}); }
+              catch(providerError){ const e=new Error(`Scene ${sceneNumber} clean-image regeneration ${qaAttempt+1}/2 failed at the image provider (OCR itself worked): ${providerError.message}`); e.code='IMAGE_PROVIDER_FAILED'; throw e; }
               if(retryPath && path.resolve(String(retryPath))!==path.resolve(p)) await fs.copyFile(String(retryPath),p);
               usedPrompt=retryPrompt;
               normalized=await normalizeSceneImage(p);
@@ -445,7 +451,7 @@ async function processJob(job){
           } catch(ocrError) {
             // Never accept a newly generated real image when OCR is unavailable:
             // that would turn an inspection outage into an unnoticed text leak.
-            if(String(ocrError?.message||'').includes('still contains unwanted text')) throw ocrError;
+            if(String(ocrError?.message||'').includes('still contains unwanted text')||ocrError?.code==='IMAGE_PROVIDER_FAILED') throw ocrError;
             throw new Error(`Scene ${sceneNumber} image integrity check could not complete. The image was not approved. OCR error: ${ocrError.message}`);
           }
           const asset=await validateImageAsset(p,expectedMode,sceneNumber);
