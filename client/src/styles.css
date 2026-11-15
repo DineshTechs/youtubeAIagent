@@ -81,3 +81,17 @@ a:hover {
 
 /* V1.2 automated QA and selective scene regeneration */
 .qaPanel,.sceneReview{margin:16px 0;padding:14px;background:#0b1921;border:1px solid #19343e;border-radius:12px}.qaPanel .sectionHead,.sceneReview .sectionHead{align-items:center}.qaSummary{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0;padding:12px;background:#0e2029;border:1px solid #19343e;border-radius:9px}.qaSummary strong{font-size:24px;color:#a7f3d0}.qaSummary span{font-size:12px;font-weight:700;color:#bdebf2}.qaSummary small{margin-left:auto;color:#75909b;font-size:10px}.qaChecks{display:grid;gap:7px}.qaCheck{display:flex;align-items:flex-start;gap:10px;padding:9px;background:#08161d;border:1px solid #19343e;border-radius:8px}.qaCheck>div{display:grid;gap:3px}.qaCheck strong{font-size:11px;color:#cce6eb}.qaCheck span{font-size:10px;color:#8ca7af;line-height:1.45}.qaBadge{flex:none;min-width:52px;text-align:center;border-radius:6px;padding:4px 5px;font-size:9px}.qaBadge.pass{background:#153229;color:#a7f3d0}.qaBadge.warn{background:#302b18;color:#f8e6a5}.qaBadge.fail{background:#3b1b22;color:#ffb6c1}.qaBadge.review{background:#202e34;color:#b9eaf2}.manualReview{display:grid;gap:9px;margin-top:15px;padding-top:13px;border-top:1px solid #19343e}.manualReview h4{margin:0}.manualReview label{display:flex;align-items:flex-start;gap:8px;color:#b9d6dd;font-size:11px;line-height:1.4}.manualReview input{accent-color:#2d8997;margin-top:1px}.manualReview>small{color:#75909b;font-size:10px}.sceneReviewGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}.sceneReviewCard{display:grid;grid-template-columns:96px minmax(0,1fr);gap:10px;padding:9px;background:#08161d;border:1px solid #19343e;border-radius:9px;min-width:0}.sceneReviewCard img{width:96px;height:130px;object-fit:cover;border-radius:6px;background:#142831}.sceneReviewCard>div{min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.sceneReviewCard b{font-size:11px}.sceneReviewCard p{margin:0;color:#8ca7af;font-size:10px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}.sceneReviewCard button{margin-top:auto;padding:7px 9px;font-size:10px}@media(max-width:700px){.sceneReviewGrid{grid-template-columns:1fr}.qaSummary small{width:100%;margin-left:0}.sceneReviewCard{grid-template-columns:84px minmax(0,1fr)}.sceneReviewCard img{width:84px;height:116px}}
+
+/* V1.7.0 audio intelligence details inside the existing QA report */
+.qaBadge.skipped{background:#1c2a31;color:#94a3b8;border:1px solid #2a3c45}
+.audioDetails{margin-top:8px;display:grid;gap:6px}
+.audioLevels{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:#9fb3bd}
+.audioLevels b{color:#e2f2f7;font-weight:600}
+.audioGaps{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.audioGaps li{display:grid;grid-template-columns:auto auto 1fr;gap:4px 10px;align-items:baseline;font-size:12px;padding:6px 8px;border:1px solid #19343e;border-radius:7px;background:#0e2029}
+.audioGaps li.review{border-color:#5b4a1d}
+.audioGaps li span:last-child{color:#9fb3bd}
+.gapSeverity{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8}
+.gapSeverity.high{color:#fbbf24}.gapSeverity.medium{color:#fcd34d}
+@media (max-width:700px){.audioGaps li{grid-template-columns:1fr}}
+.audioDetails small.muted{font-size:11px;line-height:1.45}

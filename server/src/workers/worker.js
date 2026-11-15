@@ -18,23 +18,10 @@ import ffmpegStatic from 'ffmpeg-static';
 import {optimizeForGeneration} from '../services/youtubeSkills/index.js';
 import {inspectImageText} from '../services/media/imageTextQa.js';
 import {buildChannelProfile,channelProfileSummary} from '../services/channelProfile.js';
+import {traceSafe} from '../utils/traceSafe.js';
+import {recoverInterruptedJobs} from './recovery.js';
 
 let busy=false;
-
-function traceSafe(value, max=12000){
-  if(value===undefined)return undefined;
-  if(value===null)return null;
-  if(typeof value==='string')return value.length>max?value.slice(0,max)+'…':value;
-  try{
-    const seen=new WeakSet();
-    const json=JSON.stringify(value,(k,v)=>{
-      if(typeof v==='object'&&v!==null){if(seen.has(v))return '[Circular]';seen.add(v);}
-      if(typeof v==='string'&&v.length>4000)return v.slice(0,4000)+'…';
-      return v;
-    });
-    return json.length>max?JSON.parse(json.slice(0,max).replace(/,?\s*[^,{}\[\]]*$/,'')||'null'):JSON.parse(json);
-  }catch{return String(value).slice(0,max);}
-}
 
 async function traceStage(jobId, stage, input, work, meta={}){
   const stageId=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
@@ -556,7 +543,7 @@ async function processJob(job){
       await Video.findByIdAndUpdate(video._id,{$set:{qa:report,visualReview:{}}});
       if(!report.pass) throw new Error(`Video technical QA failed: ${report.checks.filter(x=>x.status==='FAIL').map(x=>`${x.name}: ${x.message}`).join('; ')}`);
       return report;
-    },{qaVersion:'1.6.1',checks:['file','full-decode','profile-aspect-ratio','resolution','duration','black-frames','audio-silence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','3-second-hook-delivery','opening-visual-pacing','scene-assets','subtitle-file','manual-visual-review']});
+    },{qaVersion:'1.7.0',checks:['file','full-decode','profile-aspect-ratio','resolution','duration','black-frames','audio-silence','audio-intelligence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','3-second-hook-delivery','opening-visual-pacing','scene-assets','subtitle-file','manual-visual-review']});
     await setVideoStatus(video._id,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Complete visual review before approval.`,'clear',attempt);
     await updateJob(jobId,100,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Video ready for visual review.`,'COMPLETED',{completedAt:new Date(),lastHeartbeatAt:new Date()});
   }catch(e){
@@ -571,23 +558,27 @@ async function processJob(job){
 }
 
 export function startWorker(){
-  // Recover cancellation requests persisted by older builds that marked the
-  // video CANCELLED but left its GenerationJob RUNNING during FFmpeg rendering.
-  (async()=>{
-    const interrupted=await GenerationJob.find({status:'RUNNING',cancelRequested:true}).select('_id videoId retryCount').lean();
-    for(const item of interrupted){
-      await GenerationJob.findByIdAndUpdate(item._id,{$set:{status:'CANCELLED',step:'CANCELLED',cancelledAt:new Date(),completedAt:new Date()},$push:{logs:{at:new Date(),message:'Recovered a pending cancellation request during backend startup.',level:'warning'}}});
-      if(item.videoId) await setVideoStatus(item.videoId,'CANCELLED','Generation cancelled during backend restart. Saved assets can be resumed.','keep',Number(item.retryCount||0));
-    }
-  })().catch(error=>console.error('Worker cancellation recovery failed:',error));
+  // Recover jobs left RUNNING by a crash/restart (including pending cancellation
+  // requests from older builds). Poll only after recovery has finished, so a
+  // fresh job is never mistaken for an interrupted one.
+  let ready=false;
+  recoverInterruptedJobs({GenerationJob,setVideoStatus})
+    .catch(error=>console.error('Worker startup recovery failed:',error))
+    .finally(()=>{ready=true;});
   setInterval(async()=>{
-    if(busy)return;
-    const job=await GenerationJob.findOneAndUpdate(
-      {status:'QUEUED'},
-      {$set:{status:'RUNNING',step:'STARTING',startedAt:new Date(),lastHeartbeatAt:new Date()}},
-      {sort:{createdAt:1},returnDocument:'after'}
-    );
-    if(job)processJob(job);
+    if(busy||!ready)return;
+    try{
+      const job=await GenerationJob.findOneAndUpdate(
+        {status:'QUEUED'},
+        {$set:{status:'RUNNING',step:'STARTING',startedAt:new Date(),lastHeartbeatAt:new Date()}},
+        {sort:{createdAt:1},returnDocument:'after'}
+      );
+      if(job)processJob(job).catch(error=>console.error('Worker job crashed outside its error handler:',error));
+    }catch(error){
+      // A temporary MongoDB error must not become an unhandled rejection
+      // (which terminates Node). The next tick simply tries again.
+      console.error('Worker poll failed; retrying on next tick:',error.message);
+    }
   },1000);
   console.log('MongoDB job worker started (no Redis).');
 }

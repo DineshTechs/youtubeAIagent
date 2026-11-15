@@ -4,6 +4,7 @@ import {spawn} from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import {env} from '../../config/env.js';
 import {findHookCompletionTime, analyzeHookText} from '../../utils/retentionAnalysis.js';
+import {analyzeAudioTrack,silenceInWindow} from './audioIntelligence.js';
 
 const ffmpegPath = env.ffmpegPath || ffmpegStatic || 'ffmpeg';
 function runFfmpeg(args){
@@ -31,9 +32,7 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
 
   let output='';
   try{output=await runFfmpeg(['-hide_banner','-i',videoPath,'-map','0:v:0','-map','0:a:0?','-vf','blackdetect=d=1:pix_th=0.10','-f','null','-']);
-    if(/Stream #\d+:\d+(?:\([^)]+\))?.*?Audio:/i.test(output)){
-      output+='\n'+await runFfmpeg(['-hide_banner','-i',videoPath,'-map','0:a:0','-af','silencedetect=noise=-45dB:d=1','-f','null','-']);
-    }}
+  }
   catch(error){checks.push(check('Full decode','FAIL','FFmpeg could not decode the complete MP4 video/audio streams.',{details:error.message}));return report(checks,{sizeBytes:stat.size});}
   checks.push(check('Full decode','PASS','FFmpeg decoded the complete mapped video and available audio streams.'));
 
@@ -43,6 +42,13 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
   const am=output.match(/Stream #\d+:\d+(?:\([^)]+\))?.*?Audio:\s*([^\n]+)/i);
   const dimensions=vm?.[1]?.match(/(?:,|\s)(\d{2,5})x(\d{2,5})(?:[,\s]|$)/);
   const width=dimensions?Number(dimensions[1]):null,height=dimensions?Number(dimensions[2]):null;
+  // V1.7.0 fix: ONE audio measurement feeds every audio check (opening audio,
+  // silence scan, audio intelligence) so their numbers can never disagree.
+  let audioIntelligence=null,audioAnalysisError=null;
+  if(am){
+    try{audioIntelligence=await analyzeAudioTrack({inputPath:videoPath,ffmpegPath,durationSec:durationSec||0,sceneDurations});}
+    catch(error){audioAnalysisError=error.message;}
+  }
   checks.push(check('Video stream',vm?'PASS':'FAIL',vm?'Video stream detected.':'No video stream detected.'));
   checks.push(check('Audio stream',am?'PASS':'FAIL',am?'Narration/audio stream detected.':'No audio stream detected.'));
   if(width&&height){
@@ -88,13 +94,13 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
 
     if(am){
       try{
-        const openingAudioLog=await runFfmpeg(['-hide_banner','-i',videoPath,'-t',String(openingWindowSec),'-map','0:a:0','-af','silencedetect=noise=-45dB:d=0.75','-vn','-f','null','-']);
-        const starts=matches(openingAudioLog,/silence_start:\s*([\d.]+)/g);
-        const ends=matches(openingAudioLog,/silence_end:\s*([\d.]+)/g);
-        const silenceSec=sumSegments(starts,ends);
-        const leadingSilence=starts.length&&starts[0]<=0.05&&ends.length?Math.max(0,ends[0]-starts[0]):0;
+        if(!audioIntelligence)throw new Error(audioAnalysisError||'audio analysis unavailable');
+        const opening=silenceInWindow(audioIntelligence.gaps,{fromSec:0,toSec:openingWindowSec,minDurationSec:0.75});
+        const silenceSec=opening.silenceSec;
+        const first=audioIntelligence.gaps.find(g=>g.durationSec>=0.75);
+        const leadingSilence=first&&first.startSec<=0.05?Math.max(0,Math.min(first.endSec,openingWindowSec)-first.startSec):0;
         const audioOk=leadingSilence<=0.75&&silenceSec<=2.5;
-        checks.push(check('Opening audio start',audioOk?'PASS':'WARN',audioOk?'Opening narration starts promptly with no prolonged silence.':`Opening audio has ${leadingSilence.toFixed(2)}s leading silence and ${silenceSec.toFixed(2)}s total detected silence.`,{windowSec:openingWindowSec,leadingSilenceSec:Number(leadingSilence.toFixed(2)),silenceDurationSec:Number(silenceSec.toFixed(2)),segments:starts.length}));
+        checks.push(check('Opening audio start',audioOk?'PASS':'WARN',audioOk?'Opening narration starts promptly with no prolonged silence.':`Opening audio has ${leadingSilence.toFixed(2)}s leading silence and ${silenceSec.toFixed(2)}s total detected silence.`,{windowSec:openingWindowSec,leadingSilenceSec:Number(leadingSilence.toFixed(2)),silenceDurationSec:Number(silenceSec.toFixed(2)),segments:opening.segments}));
       }catch(error){
         checks.push(check('Opening audio start','WARN',`Could not complete the opening audio scan: ${error.message}`));
       }
@@ -151,9 +157,33 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
   const blackStarts=matches(output,/black_start:\s*([\d.]+)/g),blackEnds=matches(output,/black_end:\s*([\d.]+)/g),blackDuration=sumSegments(blackStarts,blackEnds);
   const blackWarn=blackDuration>Math.max(2,(durationSec||0)*.08);
   checks.push(check('Black-frame scan',blackWarn?'WARN':'PASS',blackWarn?`Detected approximately ${blackDuration.toFixed(1)} seconds of black frames; review the video.`:'No prolonged black-frame segments detected.',{blackDurationSec:Number(blackDuration.toFixed(2)),segments:blackStarts.length}));
-  const silenceStarts=matches(output,/silence_start:\s*([\d.]+)/g),silenceEnds=matches(output,/silence_end:\s*([\d.]+)/g),silenceDuration=sumSegments(silenceStarts,silenceEnds);
-  const silenceWarn=silenceDuration>Math.max(2,(durationSec||0)*.08);
-  checks.push(check('Audio silence scan',silenceWarn?'WARN':'PASS',silenceWarn?`Detected approximately ${silenceDuration.toFixed(1)} seconds of silence; check narration gaps.`:'No prolonged audio-silence segments detected.',{silenceDurationSec:Number(silenceDuration.toFixed(2)),segments:silenceStarts.length}));
+  if(am&&audioIntelligence){
+    const scan=silenceInWindow(audioIntelligence.gaps,{minDurationSec:1});
+    const silenceDuration=scan.silenceSec;
+    const silenceWarn=silenceDuration>Math.max(2,(durationSec||0)*.08);
+    const listed=audioIntelligence.gaps.filter(g=>g.durationSec>=1).map(g=>`${g.startSec.toFixed(2)}–${g.endSec.toFixed(2)}s`).join(', ');
+    checks.push(check('Audio silence scan',silenceWarn?'WARN':'PASS',silenceWarn?`Detected approximately ${silenceDuration.toFixed(1)} seconds of silence (${listed}); check narration gaps. See Audio intelligence for per-gap reasons.`:'No prolonged audio-silence segments detected.',{silenceDurationSec:Number(silenceDuration.toFixed(2)),segments:scan.segments}));
+  }else if(!am){
+    checks.push(check('Audio silence scan','SKIPPED','Skipped: the rendered MP4 has no audio stream (see Audio stream check).'));
+  }else{
+    checks.push(check('Audio silence scan','WARN',`Could not complete the audio silence scan: ${audioAnalysisError||'audio analysis unavailable'}`));
+  }
+  // Audio intelligence carries the detailed per-gap data and levels. To avoid
+  // one pause producing several warnings, it only WARNs for problems no other
+  // check covers (near-clipping, digital silence); gaps are listed for review.
+  if(!am){
+    checks.push(check('Audio intelligence','SKIPPED','Skipped: the rendered MP4 has no audio stream (see Audio stream check).'));
+  }else if(!audioIntelligence){
+    checks.push(check('Audio intelligence','WARN',`Detailed audio analysis unavailable: ${audioAnalysisError||'unknown error'}`));
+  }else{
+    const ai=audioIntelligence;
+    const levels=ai.peakDbfs==null?'levels unavailable':`peak ${ai.peakDbfs.toFixed(1)} dBFS, RMS ${ai.rmsDbfs==null?'n/a':ai.rmsDbfs.toFixed(1)+' dBFS'}`;
+    const gapsText=ai.gapCount?`${ai.gapCount} quiet gap(s), ${ai.reviewGapCount} worth a listen (longest ${ai.longestGapSec.toFixed(2)}s)`:'no quiet gaps';
+    const status=ai.clippingSuspected||ai.digitalSilence?'WARN':'PASS';
+    const message=ai.digitalSilence?'The audio track is completely silent.':ai.clippingSuspected?`Audio peak is near or above 0 dBFS (${levels}); check for clipping. ${gapsText.charAt(0).toUpperCase()+gapsText.slice(1)}.`:`Audio ${levels}; ${gapsText}. Pauses may be intentional.`;
+    checks.push(check('Audio intelligence',status,message,{audioIntelligence:ai}));
+  }
+
 
   const scenes=Array.isArray(scenePaths)?scenePaths:[];let validScenes=0;const sceneDetails=[];
   for(let i=0;i<scenes.length;i++){try{const s=await fs.stat(scenes[i]);const valid=s.isFile()&&s.size>100;if(valid)validScenes++;sceneDetails.push({scene:i+1,exists:true,sizeBytes:s.size,valid,fileName:path.basename(scenes[i])});}catch{sceneDetails.push({scene:i+1,exists:false,valid:false,fileName:scenes[i]?path.basename(scenes[i]):null});}}
@@ -168,4 +198,4 @@ export async function runVideoQualityAssurance({videoPath,expectedWidth=1080,exp
   checks.push(check('Story suitability','REVIEW','Human review required: check age suitability, story clarity and originality.'));
   return report(checks,{durationSec,width,height,sizeBytes:stat.size,videoPath,ffmpegPath:path.basename(ffmpegPath)});
 }
-function report(checks,meta={}){const failures=checks.filter(x=>x.status==='FAIL').length,warnings=checks.filter(x=>x.status==='WARN').length,passed=checks.filter(x=>x.status==='PASS').length,score=Math.max(0,Math.round(passed/(passed+warnings+failures||1)*100));const retentionChecks=checks.filter(x=>/opening|hook|pacing/i.test(x.name));const retentionPass=retentionChecks.filter(x=>x.status==='PASS').length;const retentionWarnings=retentionChecks.filter(x=>x.status==='WARN').length;const retentionScore=Math.round(retentionPass/(retentionPass+retentionWarnings||1)*100);return {version:'1.6.1',pass:failures===0,score,retention:{score:retentionScore,checks:retentionChecks.length,passed:retentionPass,warnings:retentionWarnings},summary:{passed,warnings,failures,manualReviews:checks.filter(x=>x.status==='REVIEW').length},checks,meta,ranAt:new Date()};}
+function report(checks,meta={}){const failures=checks.filter(x=>x.status==='FAIL').length,warnings=checks.filter(x=>x.status==='WARN').length,passed=checks.filter(x=>x.status==='PASS').length,score=Math.max(0,Math.round(passed/(passed+warnings+failures||1)*100));const retentionChecks=checks.filter(x=>/opening|hook|pacing/i.test(x.name));const retentionPass=retentionChecks.filter(x=>x.status==='PASS').length;const retentionWarnings=retentionChecks.filter(x=>x.status==='WARN').length;const retentionScore=Math.round(retentionPass/(retentionPass+retentionWarnings||1)*100);return {version:'1.7.0',pass:failures===0,score,retention:{score:retentionScore,checks:retentionChecks.length,passed:retentionPass,warnings:retentionWarnings},summary:{passed,warnings,failures,manualReviews:checks.filter(x=>x.status==='REVIEW').length},checks,meta,ranAt:new Date()};}

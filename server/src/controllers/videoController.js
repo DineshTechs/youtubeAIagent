@@ -3,6 +3,7 @@ import path from 'node:path';
 import GenerationJob from '../models/GenerationJob.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
 import { permanentlyDeleteVideo } from '../services/video/videoCleanup.js';
+import {approvalBlockReason} from '../utils/approvalGate.js';
 
 export async function listVideos(req,res,next){
   try{
@@ -30,11 +31,8 @@ export async function getVideo(req,res,next){try{
 export async function approveVideo(req,res,next){try{
   const current=await Video.findById(req.params.id).lean();
   if(!current)return res.status(404).json({error:'Video not found'});
-  if(['1.2','1.3','1.4','1.5.0'].includes(String(current.qa?.version))) {
-    const review=current.visualReview||{};
-    if(!current.qa.pass)return res.status(409).json({error:'Technical QA has failed. Run QA again or fix the reported issues before approval.'});
-    if(!(review.imagesMatch&&review.subtitlesReadable&&review.ageAppropriate))return res.status(409).json({error:'Complete all three visual review checks before approving this video.'});
-  }
+  const blockReason=approvalBlockReason(current);
+  if(blockReason)return res.status(409).json({error:blockReason});
   const v=await Video.findOneAndUpdate(
     {_id:req.params.id,status:'AWAITING_APPROVAL'},
     {$set:{status:'APPROVED'},$unset:{error:1},$push:{statusHistory:{status:'APPROVED',message:'Approved by user.',attempt:0,source:'VIDEO'}}},
