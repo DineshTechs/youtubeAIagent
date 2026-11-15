@@ -4,8 +4,20 @@ const app=express(); app.disable('x-powered-by'); app.use(cors()); app.use(expre
 app.get('/api/health',(_req,res)=>res.json({ok:true,service:'youtube-ai-agent',version:'1.5.0',mediaMock:env.mediaMock,openaiConfigured:Boolean(env.openaiKey)}));
 app.use('/storage',express.static(path.resolve('storage'))); app.use('/api/agent',agentRoutes); app.use('/api/videos',videoRoutes); app.use('/api/series',seriesRoutes); app.use('/api/ai',aiRoutes); app.use('/api/youtube-skills',youtubeSkillsRoutes);
 app.use((err,_req,res,_next)=>{console.error(err);res.status(500).json({error:err.message||'Internal server error'});});
-connectDb().then(async()=>{
-  try { const cleanup=await cleanupExpiredVideos(); console.log(`Video retention cleanup: ${cleanup.deleted||0} deleted, ${cleanup.candidates||0} candidates.`); } catch (e) { console.error('Initial video retention cleanup failed:', e.message); }
-  setInterval(async()=>{ try { const cleanup=await cleanupExpiredVideos(); if(cleanup.deleted) console.log(`Video retention cleanup: ${cleanup.deleted} deleted.`); } catch(e) { console.error('Scheduled video retention cleanup failed:',e.message); } }, 24*60*60*1000).unref();
-  startWorker();app.listen(env.port,()=>console.log(`YouTube AI Agent API listening on ${env.port}`));
+connectDb().then(()=>{
+  // Bind the port FIRST. A second backend instance (for example a second
+  // `npm run dev`) then exits on EADDRINUSE before it can touch jobs or files,
+  // instead of running the worker/recovery against another instance's live job.
+  const server=app.listen(env.port);
+  server.on('error',error=>{
+    if(error.code==='EADDRINUSE') console.error(`Port ${env.port} is already in use. Another YouTube AI Agent backend is probably running; stop it first. This instance will exit without starting the worker.`);
+    else console.error('API server failed to start:',error);
+    process.exit(1);
+  });
+  server.on('listening',async()=>{
+    console.log(`YouTube AI Agent API listening on ${env.port}`);
+    try { const cleanup=await cleanupExpiredVideos(); console.log(`Video retention cleanup: ${cleanup.deleted||0} deleted, ${cleanup.candidates||0} candidates.`); } catch (e) { console.error('Initial video retention cleanup failed:', e.message); }
+    setInterval(async()=>{ try { const cleanup=await cleanupExpiredVideos(); if(cleanup.deleted) console.log(`Video retention cleanup: ${cleanup.deleted} deleted.`); } catch(e) { console.error('Scheduled video retention cleanup failed:',e.message); } }, 24*60*60*1000).unref();
+    startWorker();
+  });
 }).catch(e=>{console.error(e);process.exit(1);});

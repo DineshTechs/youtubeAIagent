@@ -19,9 +19,10 @@ import {optimizeForGeneration} from '../services/youtubeSkills/index.js';
 import {inspectImageText} from '../services/media/imageTextQa.js';
 import {buildChannelProfile,channelProfileSummary} from '../services/channelProfile.js';
 import {traceSafe} from '../utils/traceSafe.js';
-import {recoverInterruptedJobs} from './recovery.js';
+import {recoverInterruptedJobs,HEARTBEAT_INTERVAL_MS} from './recovery.js';
 
 let busy=false;
+let currentJobId=null;
 
 async function traceStage(jobId, stage, input, work, meta={}){
   const stageId=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
@@ -82,6 +83,7 @@ async function assertNotCancelled(jobId,videoId,attempt=0){
 async function processJob(job){
   busy=true;
   const jobId=job._id;
+  currentJobId=jobId;
   const attempt=Number(job.retryCount||0);
   let video=null;
   try{
@@ -554,19 +556,33 @@ async function processJob(job){
       await GenerationJob.findByIdAndUpdate(jobId,{$set:{status:'FAILED',error:e.message,failedAt:new Date(),lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),message:e.message,level:'error'}}});
       if(video?._id) await setVideoStatus(video._id,'FAILED',e.message,'set',attempt);
     }
-  }finally{busy=false;}
+  }finally{busy=false;currentJobId=null;}
 }
 
 export function startWorker(){
-  // Recover jobs left RUNNING by a crash/restart (including pending cancellation
-  // requests from older builds). Poll only after recovery has finished, so a
-  // fresh job is never mistaken for an interrupted one.
-  let ready=false;
-  recoverInterruptedJobs({GenerationJob,setVideoStatus})
-    .catch(error=>console.error('Worker startup recovery failed:',error))
-    .finally(()=>{ready=true;});
+  // Liveness heartbeat: long stages (image generation, OCR, TTS, FFmpeg) may
+  // not log for minutes, so the worker refreshes lastHeartbeatAt on its own.
+  setInterval(()=>{
+    if(!busy||!currentJobId)return;
+    GenerationJob.updateOne({_id:currentJobId,status:'RUNNING'},{$set:{lastHeartbeatAt:new Date()}})
+      .catch(error=>console.error('Worker heartbeat failed:',error.message));
+  },HEARTBEAT_INTERVAL_MS).unref();
+
+  // Recover jobs whose worker stopped (crash/restart), at startup and every
+  // minute. Only jobs with no heartbeat for 2 minutes are touched, so a job
+  // owned by another live process is never interrupted.
+  let recovering=false;
+  const recover=async()=>{
+    if(recovering)return; recovering=true;
+    try{await recoverInterruptedJobs({GenerationJob,setVideoStatus,excludeJobId:currentJobId});}
+    catch(error){console.error('Worker recovery failed:',error.message);}
+    finally{recovering=false;}
+  };
+  recover();
+  setInterval(recover,60_000).unref();
+
   setInterval(async()=>{
-    if(busy||!ready)return;
+    if(busy)return;
     try{
       const job=await GenerationJob.findOneAndUpdate(
         {status:'QUEUED'},
