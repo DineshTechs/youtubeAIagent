@@ -1,0 +1,930 @@
+{
+"clean_scene_1_portrait": [
+{
+"text": "—",
+"confidence": 36.0
+},
+{
+"text": "=",
+"confidence": 44.0
+},
+{
+"text": "\\N",
+"confidence": 0.0
+},
+{
+"text": "\\",
+"confidence": 79.0
+},
+{
+"text": "=",
+"confidence": 37.0
+},
+{
+"text": "|",
+"confidence": 74.0
+},
+{
+"text": "V/",
+"confidence": 55.0
+},
+{
+"text": "३",
+"confidence": 31.0
+},
+{
+"text": "3३३",
+"confidence": 57.0
+},
+{
+"text": "/",
+"confidence": 52.0
+},
+{
+"text": "जे",
+"confidence": 42.0
+},
+{
+"text": "3३७",
+"confidence": 56.0
+},
+{
+"text": "नस",
+"confidence": 43.0
+},
+{
+"text": "Y",
+"confidence": 54.0
+},
+{
+"text": "=",
+"confidence": 91.0
+},
+{
+"text": "ने",
+"confidence": 51.0
+},
+{
+"text": "\\",
+"confidence": 79.0
+},
+{
+"text": "|",
+"confidence": 44.0
+},
+{
+"text": "2",
+"confidence": 28.0
+}
+],
+"clean_scene_2_whiteboard": [
+{
+"text": "=",
+"confidence": 34.0
+},
+{
+"text": "-.",
+"confidence": 14.0
+},
+{
+"text": "ही",
+"confidence": 11.0
+},
+{
+"text": "ला,",
+"confidence": 47.0
+},
+{
+"text": "a",
+"confidence": 12.0
+},
+{
+"text": "_",
+"confidence": 0.0
+},
+{
+"text": "VJ",
+"confidence": 13.0
+}
+],
+"clean_scene_3_brain_FALSE_POSITIVE_IN_PROD": [
+{
+"text": "+.",
+"confidence": 24.0
+},
+{
+"text": "y",
+"confidence": 0.0
+},
+{
+"text": "&",
+"confidence": 64.0
+},
+{
+"text": "«",
+"confidence": 77.0
+},
+{
+"text": "Cm)",
+"confidence": 29.0
+},
+{
+"text": ")",
+"confidence": 17.0
+},
+{
+"text": "»e.",
+"confidence": 0.0
+},
+{
+"text": "oil",
+"confidence": 44.0
+},
+{
+"text": "&",
+"confidence": 91.0
+},
+{
+"text": "AN",
+"confidence": 51.0
+},
+{
+"text": "(",
+"confidence": 58.0
+},
+{
+"text": "हि",
+"confidence": 54.0
+},
+{
+"text": "BY",
+"confidence": 8.0
+},
+{
+"text": ")",
+"confidence": 29.0
+},
+{
+"text": "का",
+"confidence": 36.0
+},
+{
+"text": "Na",
+"confidence": 7.0
+},
+{
+"text": "का",
+"confidence": 36.0
+}
+],
+"clean_scene_1_mirror": [
+{
+"text": "7",
+"confidence": 54.0
+},
+{
+"text": "NN",
+"confidence": 0.0
+},
+{
+"text": "—",
+"confidence": 14.0
+},
+{
+"text": "A",
+"confidence": 77.0
+},
+{
+"text": "|",
+"confidence": 87.0
+},
+{
+"text": "\\",
+"confidence": 70.0
+},
+{
+"text": "77",
+"confidence": 0.0
+},
+{
+"text": "7",
+"confidence": 71.0
+},
+{
+"text": "=A",
+"confidence": 13.0
+},
+{
+"text": "a",
+"confidence": 55.0
+},
+{
+"text": "me",
+"confidence": 29.0
+},
+{
+"text": "\\",
+"confidence": 37.0
+},
+{
+"text": "a",
+"confidence": 0.0
+},
+{
+"text": "\\",
+"confidence": 0.0
+},
+{
+"text": "1",
+"confidence": 26.0
+},
+{
+"text": "4",
+"confidence": 87.0
+},
+{
+"text": "-—",
+"confidence": 15.0
+},
+{
+"text": "{",
+"confidence": 75.0
+},
+{
+"text": "/",
+"confidence": 75.0
+},
+{
+"text": "ied",
+"confidence": 44.0
+}
+],
+"clean_scene_2_mirror": [
+{
+"text": "£4",
+"confidence": 44.0
+},
+{
+"text": "“>",
+"confidence": 0.0
+},
+{
+"text": "AE",
+"confidence": 26.0
+},
+{
+"text": "Pp\"",
+"confidence": 39.0
+},
+{
+"text": "ला,",
+"confidence": 50.0
+},
+{
+"text": "a",
+"confidence": 10.0
+},
+{
+"text": "w",
+"confidence": 52.0
+}
+],
+"clean_scene_3_mirror": [
+{
+"text": "हद",
+"confidence": 0.0
+},
+{
+"text": "£5",
+"confidence": 0.0
+},
+{
+"text": "E33",
+"confidence": 22.0
+},
+{
+"text": "J.",
+"confidence": 22.0
+},
+{
+"text": "Ty",
+"confidence": 5.0
+},
+{
+"text": "Fa",
+"confidence": 26.0
+},
+{
+"text": "{",
+"confidence": 77.0
+},
+{
+"text": "&~",
+"confidence": 32.0
+},
+{
+"text": "(&",
+"confidence": 29.0
+},
+{
+"text": "&",
+"confidence": 30.0
+},
+{
+"text": "4g",
+"confidence": 33.0
+},
+{
+"text": "Y",
+"confidence": 57.0
+},
+{
+"text": "bh,",
+"confidence": 25.0
+},
+{
+"text": "6",
+"confidence": 37.0
+},
+{
+"text": "1",
+"confidence": 88.0
+}
+],
+"real_flux_text_CLEAN_WOUR": [
+{
+"text": "Ea",
+"confidence": 20.0
+},
+{
+"text": "10m",
+"confidence": 11.0
+},
+{
+"text": "(NY,",
+"confidence": 35.0
+},
+{
+"text": "»",
+"confidence": 57.0
+},
+{
+"text": "3",
+"confidence": 26.0
+},
+{
+"text": "हे",
+"confidence": 33.0
+},
+{
+"text": "»",
+"confidence": 70.0
+},
+{
+"text": "pe",
+"confidence": 11.0
+},
+{
+"text": "ad",
+"confidence": 77.0
+},
+{
+"text": "FB",
+"confidence": 62.0
+},
+{
+"text": "&",
+"confidence": 31.0
+},
+{
+"text": "O01",
+"confidence": 29.0
+},
+{
+"text": "=",
+"confidence": 11.0
+},
+{
+"text": "A",
+"confidence": 91.0
+},
+{
+"text": "Al",
+"confidence": 49.0
+},
+{
+"text": "oN",
+"confidence": 2.0
+},
+{
+"text": "SN",
+"confidence": 46.0
+},
+{
+"text": "WE",
+"confidence": 41.0
+},
+{
+"text": "Ry",
+"confidence": 21.0
+},
+{
+"text": "|",
+"confidence": 72.0
+},
+{
+"text": "2",
+"confidence": 58.0
+},
+{
+"text": "CLEAN",
+"confidence": 96.0
+},
+{
+"text": "ICOMINT",
+"confidence": 41.0
+},
+{
+"text": "\\",
+"confidence": 85.0
+},
+{
+"text": "wm",
+"confidence": 21.0
+},
+{
+"text": "दि",
+"confidence": 58.0
+},
+{
+"text": "है",
+"confidence": 48.0
+},
+{
+"text": "दि",
+"confidence": 40.0
+},
+{
+"text": "कर",
+"confidence": 47.0
+},
+{
+"text": "+",
+"confidence": 82.0
+},
+{
+"text": "विवि",
+"confidence": 56.0
+},
+{
+"text": "है",
+"confidence": 25.0
+},
+{
+"text": "7)",
+"confidence": 45.0
+},
+{
+"text": "NY.",
+"confidence": 75.0
+},
+{
+"text": "A",
+"confidence": 47.0
+},
+{
+"text": "i",
+"confidence": 39.0
+},
+{
+"text": "VU",
+"confidence": 31.0
+},
+{
+"text": "IR",
+"confidence": 53.0
+},
+{
+"text": "3",
+"confidence": 48.0
+},
+{
+"text": "Qi",
+"confidence": 46.0
+},
+{
+"text": "Rl",
+"confidence": 32.0
+},
+{
+"text": "BAN",
+"confidence": 88.0
+},
+{
+"text": "rie",
+"confidence": 57.0
+},
+{
+"text": "oS.",
+"confidence": 26.0
+}
+],
+"sign_OPEN_24_HOURS": [
+{
+"text": "|",
+"confidence": 45.0
+},
+{
+"text": "दि",
+"confidence": 2.0
+},
+{
+"text": "»",
+"confidence": 75.0
+},
+{
+"text": "\\",
+"confidence": 87.0
+},
+{
+"text": ".",
+"confidence": 0.0
+},
+{
+"text": "जा:",
+"confidence": 19.0
+},
+{
+"text": "बह",
+"confidence": 43.0
+},
+{
+"text": "कह",
+"confidence": 34.0
+},
+{
+"text": "ZS",
+"confidence": 34.0
+},
+{
+"text": "OPEN",
+"confidence": 96.0
+},
+{
+"text": "HOUR",
+"confidence": 96.0
+},
+{
+"text": "gee",
+"confidence": 21.0
+},
+{
+"text": "Ton",
+"confidence": 42.0
+},
+{
+"text": "न",
+"confidence": 0.0
+},
+{
+"text": "के",
+"confidence": 57.0
+},
+{
+"text": "OPEN",
+"confidence": 93.0
+},
+{
+"text": "24",
+"confidence": 96.0
+},
+{
+"text": "HOURS",
+"confidence": 95.0
+},
+{
+"text": "|",
+"confidence": 91.0
+},
+{
+"text": "BY",
+"confidence": 8.0
+},
+{
+"text": ")",
+"confidence": 29.0
+},
+{
+"text": "का",
+"confidence": 36.0
+},
+{
+"text": "Na",
+"confidence": 7.0
+},
+{
+"text": "का",
+"confidence": 36.0
+}
+],
+"hindi_word_safalta": [
+{
+"text": "सफलता",
+"confidence": 95.0
+},
+{
+"text": "+.",
+"confidence": 24.0
+},
+{
+"text": "«|",
+"confidence": 14.0
+},
+{
+"text": "i",
+"confidence": 0.0
+},
+{
+"text": "Cm)",
+"confidence": 29.0
+},
+{
+"text": "“NW",
+"confidence": 12.0
+},
+{
+"text": ")",
+"confidence": 27.0
+},
+{
+"text": "&",
+"confidence": 91.0
+},
+{
+"text": "AN",
+"confidence": 51.0
+},
+{
+"text": "(",
+"confidence": 58.0
+},
+{
+"text": "हि",
+"confidence": 54.0
+},
+{
+"text": "BY",
+"confidence": 8.0
+},
+{
+"text": ")",
+"confidence": 29.0
+},
+{
+"text": "का",
+"confidence": 36.0
+},
+{
+"text": "Na",
+"confidence": 7.0
+},
+{
+"text": "का",
+"confidence": 36.0
+}
+],
+"small_word_Motivation": [
+{
+"text": "Motivation",
+"confidence": 96.0
+},
+{
+"text": "—",
+"confidence": 43.0
+},
+{
+"text": "+.",
+"confidence": 24.0
+},
+{
+"text": "Eo.",
+"confidence": 21.0
+},
+{
+"text": "a",
+"confidence": 0.0
+},
+{
+"text": "«",
+"confidence": 77.0
+},
+{
+"text": "Cm)",
+"confidence": 29.0
+},
+{
+"text": ")",
+"confidence": 17.0
+},
+{
+"text": "»e.",
+"confidence": 0.0
+},
+{
+"text": "oil",
+"confidence": 44.0
+},
+{
+"text": "&",
+"confidence": 91.0
+},
+{
+"text": "AN",
+"confidence": 51.0
+},
+{
+"text": "(",
+"confidence": 58.0
+},
+{
+"text": "हि",
+"confidence": 54.0
+},
+{
+"text": "BY",
+"confidence": 8.0
+},
+{
+"text": ")",
+"confidence": 29.0
+},
+{
+"text": "का",
+"confidence": 36.0
+},
+{
+"text": "Na",
+"confidence": 7.0
+},
+{
+"text": "का",
+"confidence": 36.0
+}
+],
+"watermark_handle": [
+{
+"text": "Ga",
+"confidence": 21.0
+},
+{
+"text": "oy",
+"confidence": 7.0
+},
+{
+"text": "Eo.",
+"confidence": 21.0
+},
+{
+"text": ">",
+"confidence": 46.0
+},
+{
+"text": "«",
+"confidence": 77.0
+},
+{
+"text": "@dineshshorts",
+"confidence": 92.0
+},
+{
+"text": "Cm)",
+"confidence": 29.0
+},
+{
+"text": ")",
+"confidence": 17.0
+},
+{
+"text": "»e.",
+"confidence": 0.0
+},
+{
+"text": "oil",
+"confidence": 44.0
+},
+{
+"text": "&",
+"confidence": 91.0
+},
+{
+"text": "AN",
+"confidence": 51.0
+},
+{
+"text": "(",
+"confidence": 58.0
+},
+{
+"text": "हि",
+"confidence": 54.0
+},
+{
+"text": "BY",
+"confidence": 8.0
+},
+{
+"text": ")",
+"confidence": 29.0
+},
+{
+"text": "का",
+"confidence": 36.0
+},
+{
+"text": "Na",
+"confidence": 7.0
+},
+{
+"text": "@dineshshorts",
+"confidence": 92.0
+}
+],
+"hindi_caption": [
+{
+"text": "2p",
+"confidence": 53.0
+},
+{
+"text": "y",
+"confidence": 0.0
+},
+{
+"text": "&",
+"confidence": 64.0
+},
+{
+"text": "«",
+"confidence": 77.0
+},
+{
+"text": "Hl",
+"confidence": 46.0
+},
+{
+"text": "हार",
+"confidence": 65.0
+},
+{
+"text": "मत",
+"confidence": 95.0
+},
+{
+"text": "मानो",
+"confidence": 63.0
+},
+{
+"text": "Cm)",
+"confidence": 29.0
+},
+{
+"text": ")",
+"confidence": 17.0
+},
+{
+"text": "»e.",
+"confidence": 0.0
+},
+{
+"text": "oil",
+"confidence": 44.0
+},
+{
+"text": "&",
+"confidence": 91.0
+},
+{
+"text": "iE:",
+"confidence": 51.0
+},
+{
+"text": "on",
+"confidence": 45.0
+},
+{
+"text": "gl",
+"confidence": 15.0
+},
+{
+"text": "Hl",
+"confidence": 46.0
+},
+{
+"text": "1",
+"confidence": 50.0
+},
+{
+"text": "का",
+"confidence": 36.0
+}
+]
+}

@@ -13,6 +13,8 @@ function hookMatchesLanguage(hook, language) {
   return true;
 }
 
+export const OPENING_VISUAL_CUE = 'Opening shot: make the first frame immediately striking and curiosity-provoking, showing the first scene\'s narrated action clearly.';
+
 /**
  * Make the story's hook part of the actual spoken opening, not just metadata.
  * This is called before visual planning, image generation, TTS and script QA.
@@ -47,12 +49,13 @@ export function applyOpeningHook(story, language = 'English') {
     }
   }
 
-  // Give the first image generator and Visual Director the same opening context
-  // that the narrator will speak, so the opening shot does not contradict the hook.
+  // Ask for a striking opening shot WITHOUT putting the hook's words into the
+  // image description: image models draw quoted/spoken sentences as lettering
+  // (V1.7.0 bug: FLUX rendered "Hook text ..." and the Hindi hook on scene 1).
+  // The hook itself is delivered by narration and subtitles.
   const visualPrompt = String(firstScene.visualPrompt || '').trim();
-  const hookCue = `Opening hook: ${hook}. The opening frame should immediately communicate this curiosity hook while matching the first scene's narrated action.`;
-  if (!normalizeForCompare(visualPrompt).includes(normalizedHook)) {
-    firstScene.visualPrompt = [visualPrompt, hookCue].filter(Boolean).join('\n').slice(0, 1800);
+  if (!visualPrompt.includes(OPENING_VISUAL_CUE)) {
+    firstScene.visualPrompt = [visualPrompt, OPENING_VISUAL_CUE].filter(Boolean).join('\n').slice(0, 1800);
   }
 
   const pipelineData = story.pipelineData && typeof story.pipelineData === 'object'

@@ -20,9 +20,14 @@ import {inspectImageText} from '../services/media/imageTextQa.js';
 import {buildChannelProfile,channelProfileSummary} from '../services/channelProfile.js';
 import {traceSafe} from '../utils/traceSafe.js';
 import {recoverInterruptedJobs,HEARTBEAT_INTERVAL_MS} from './recovery.js';
-import {buildCleanImageRetryPrompt,promptLimitFor} from '../utils/imagePrompt.js';
+import {buildCleanImageRetryPrompt,promptLimitFor,promptStyleFor,buildSceneImagePrompt as buildSceneImagePromptPure} from '../utils/imagePrompt.js';
 
 let busy=false;
+// Short human-readable summary of what OCR actually read (confident words first).
+function ocrSummary(qa){
+  const words=(qa?.strongWords?.length?qa.strongWords:qa?.reviewWords)||[];
+  return words.length?words.map(w=>`"${w.text}" ${w.confidence}%`).join(', '):`"${String(qa?.text||'').slice(0,80)}"`;
+}
 let currentJobId=null;
 
 async function traceStage(jobId, stage, input, work, meta={}){
@@ -267,57 +272,10 @@ async function processJob(job){
       const boundary=cut.lastIndexOf(' ');
       return (boundary>Math.floor(max*0.72)?cut.slice(0,boundary):cut).trim();
     }
+    // FLUX (Cloudflare / Pollinations-flux) gets short descriptive prompts; see utils/imagePrompt.js.
+    const imagePromptStyle=promptStyleFor(selectedImageProvider,selectedImageMeta?.model||mediaSettings.imageModel);
     function buildSceneImagePrompt(scene,index,visualPlan=null){
-      // V1.4.1: send a visual-only brief to image models. Never expose production
-      // directives, narration labels, scene numbers, QA text or workflow metadata.
-      const cleanVisualText=(value,max=420)=>{
-        let text=String(value||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
-        const metaPatterns=[
-          /\bmust\s+show\b/ig, /\bshow\s+this\s+exact\b/ig,
-          /\bexact\s+scene\b/ig, /\bnarration\s+continuity\b/ig,
-          /\bscene\s*\#?\s*\d+\b/ig, /\bvisual\s+director\b/ig,
-          /\bshot\s+plan\b/ig, /\bproduction\s+instruction[s]?\b/ig,
-          /\bdo\s+not\s+forget\b/ig, /\bimage\s+prompt\b/ig,
-          /\boutput\s+only\b/ig, /\bstrictly\s+avoid\b/ig
-        ];
-        for(const pattern of metaPatterns) text=text.replace(pattern,' ');
-        text=text.replace(/\b(?:SUBJECT|ACTION|SETTING|IMPORTANT OBJECTS|EMOTION|CAMERA|COMPOSITION|NARRATION CONTEXT|CHARACTER CONTINUITY)\s*:/gi,' ');
-        text=text.replace(/\s+/g,' ').replace(/^[\s:;,.!-]+|[\s:;,.!-]+$/g,'').trim();
-        return text.length<=max?text:text.slice(0,max).replace(/\s+\S*$/,'').trim();
-      };
-
-      const plan=visualPlan?.scenes?.find(x=>Number(x.sceneNumber)===Number(scene.sceneNumber||index+1));
-      const visualBrief=cleanVisualText(scene.visualPrompt,650);
-      const planVisuals=plan
-        ? [plan.subject,plan.action,plan.setting,plan.importantObjects,plan.emotion,plan.camera,plan.composition]
-            .map(v=>cleanVisualText(v,180)).filter(Boolean).join('. ')
-        : '';
-      const characterContext=characters
-        .map(c=>cleanVisualText(`${c.name}, ${c.appearance || 'consistent appearance'}`,160))
-        .filter(Boolean).join('; ').slice(0,260);
-      const rawStyle=cleanVisualText(channelProfile?.visual?.style||series.visualStyle||'cinematic, high-quality visuals',120);
-      const style=/(cartoon|chibi|anime|comic|flat|illustrat|kawaii|storybook|clay|2d|3d animation|animated)/i.test(rawStyle)
-        ? rawStyle : `${rawStyle}, polished cinematic lighting`;
-      const vd=aiMedia.visualDirector||{};
-      const continuity=vd.continuity===false
-        ? 'Keep the subjects natural and appropriate to this single moment.'
-        : 'Keep recurring people, hosts, products or fictional characters visually consistent across scenes.';
-      // Keep all text, logos and branding in the editable video layer, never in generated artwork.
-      // This is intentionally enforced even if an older profile allowed text in images.
-      const noText='ABSOLUTELY NO VISIBLE TEXT OR GRAPHIC BRANDING: no letters, words, numbers, pseudo-writing, gibberish, fake glyphs, text-like strokes, decorative marks resembling writing, captions, subtitles, typography, labels, signage, logos, icons resembling platform brands, watermarks, signatures, QR codes, UI controls, app interfaces or decorative symbols. Screens, books, signs, packaging and labels must be blank, plain and unmarked. Do not invent text-like marks. Render a clean photorealistic/illustrated scene only. All captions and titles are added separately by the video editor.';
-      const prompt=[
-        `Create one original ${channelProfile?.visual?.aspectRatio||'9:16'} image for a YouTube video in the channel niche ${channelProfile?.niche||series.niche||'General'}.`,
-        `Depict this visual moment: ${visualBrief || planVisuals || 'A clear, expressive story moment with a recognizable subject and setting.'}.`,
-        planVisuals && planVisuals!==visualBrief ? `Visual details: ${planVisuals}.` : '',
-        characterContext ? `Character appearance: ${characterContext}.` : '',
-        continuity,
-        `Visual style: ${style}.`,
-        'Use one coherent scene, a clear main subject, natural anatomy, expressive body language and a recognizable setting. Show the described action rather than a generic portrait.',
-        'Keep important faces, hands and story objects in the upper and middle portions of the frame.',
-        noText,
-        'Generate only the image; do not reproduce any instructions or metadata.'
-      ].filter(Boolean).join(' ');
-      return cleanVisualText(prompt,1850);
+      return buildSceneImagePromptPure({scene,index,visualPlan,characters,channelProfile,series,visualDirector:aiMedia.visualDirector,promptStyle:imagePromptStyle});
     }
     const validateImageAsset=async(file,mode,sceneNumber)=>{
       let st; try{st=await fs.stat(file);}catch{throw new Error(`Scene ${sceneNumber} image asset is missing: ${file}`);}
@@ -347,15 +305,16 @@ async function processJob(job){
         ? regeneratedPath
         : ((job.payload?.renderOnly || resumeId) && savedAsset?.path ? savedAsset.path : canonicalPath);
       let reusable=false;
+      let reuseTextQa=null;
       try{const asset=await validateImageAsset(p,expectedMode,sceneNumber); reusable=asset.valid&&!forceThisScene;}catch{}
       // Previously generated assets must pass the same OCR gate before reuse.
       if(reusable && expectedMode==='real'){
         try{
           const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'true').toLowerCase()!=='false';
-          const priorTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
+          const priorTextQa=reuseTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
           if(priorTextQa.suspicious){
             reusable=false;
-            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: saved image failed the updated text-integrity check (${priorTextQa.reason}, confidence ${Math.round(priorTextQa.confidence)}%, OCR read: "${String(priorTextQa.text||'').slice(0,80)}"). Regenerating instead of reusing it.`,level:'warning'}}});
+            await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: saved image failed the text-integrity check (${priorTextQa.reason}; OCR read ${ocrSummary(priorTextQa)}). Regenerating instead of reusing it.`,level:'warning'}}});
           }
         }catch(ocrError){
           // Fail closed for real images: an asset that cannot be inspected must
@@ -431,12 +390,12 @@ async function processJob(job){
               imageTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
               if(!imageTextQa.suspicious) break;
               if(qaAttempt===2){
-                throw new Error(`Scene ${sceneNumber} still contains unwanted text after 2 regeneration attempts: ${imageTextQa.reason}. OCR: ${imageTextQa.text.slice(0,220)}`);
+                throw new Error(`Scene ${sceneNumber} still contains unwanted text after 2 regeneration attempts (${imageTextQa.reason}; OCR read ${ocrSummary(imageTextQa)}).`);
               }
-              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR detected unwanted image text (${imageTextQa.reason}, confidence ${Math.round(imageTextQa.confidence)}%, OCR read: "${String(imageTextQa.text||'').slice(0,80)}"). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR read text in the image (${imageTextQa.reason}; ${ocrSummary(imageTextQa)}). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
               // Rebuild from the original scene prompt (no stacking) and keep within the
               // provider's prompt limit; the clean-image correction is placed first.
-              const retryPrompt=buildCleanImageRetryPrompt(cleanRetryBasePrompt,{maxChars:promptLimitFor(selectedImageProvider)});
+              const retryPrompt=buildCleanImageRetryPrompt(cleanRetryBasePrompt,{maxChars:promptLimitFor(selectedImageProvider),promptStyle:imagePromptStyle});
               let retryPath;
               try{ retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize}); }
               catch(providerError){ const e=new Error(`Scene ${sceneNumber} clean-image regeneration ${qaAttempt+1}/2 failed at the image provider (OCR itself worked): ${providerError.message}`); e.code='IMAGE_PROVIDER_FAILED'; throw e; }
@@ -445,8 +404,8 @@ async function processJob(job){
               normalized=await normalizeSceneImage(p);
             }
             imageTextQa.checked=true;
-            if(!imageTextQa.suspicious && imageTextQa.hasText){
-              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR found possible readable text but no production-instruction leakage; accepted in non-strict mode.`,level:'info'}}});
+            if(imageTextQa.needsVisualReview){
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: image accepted, but OCR saw faint word-like marks (${ocrSummary(imageTextQa)}). Check this scene during visual review.`,level:'warning'}}});
             }
           } catch(ocrError) {
             // Never accept a newly generated real image when OCR is unavailable:
@@ -467,7 +426,8 @@ async function processJob(job){
             reused:false,
             regenerated:true,
             safetyRewriteUsed,
-            imagePromptUsed:usedPrompt
+            imagePromptUsed:usedPrompt,
+            textQa:imageTextQa?{checked:Boolean(imageTextQa.checked),suspicious:imageTextQa.suspicious,reason:imageTextQa.reason,strongWords:imageTextQa.strongWords||[],reviewWords:imageTextQa.reviewWords||[],needsVisualReview:Boolean(imageTextQa.needsVisualReview),language:imageTextQa.language,regionsInspected:imageTextQa.regionsInspected,engine:imageTextQa.engine}:null
           };
         },{
           mediaMode:expectedMode,
@@ -485,7 +445,7 @@ async function processJob(job){
       }else{
         const normalized=await normalizeSceneImage(p);
         const asset=await validateImageAsset(p,expectedMode,sceneNumber);
-        await traceStage(jobId,`SCENE_${i+1}_IMAGE`,{sceneNumber,visualPrompt:sceneImagePrompt,sourceVisualPrompt:scene.visualPrompt,narration:scene.narration,onScreenText:scene.onScreenText},async()=>({path:p,mode:expectedMode,sizeBytes:asset.sizeBytes,valid:true,reused:true,resolution:`${normalized.width}x${normalized.height}`,normalized:normalized.normalized}),{mediaMode:expectedMode,provider:selectedImageProvider,model:selectedImageMeta?.model || env.imageModel,reused:true});
+        await traceStage(jobId,`SCENE_${i+1}_IMAGE`,{sceneNumber,visualPrompt:sceneImagePrompt,sourceVisualPrompt:scene.visualPrompt,narration:scene.narration,onScreenText:scene.onScreenText},async()=>({path:p,mode:expectedMode,sizeBytes:asset.sizeBytes,valid:true,reused:true,resolution:`${normalized.width}x${normalized.height}`,normalized:normalized.normalized,textQa:reuseTextQa?{checked:true,suspicious:reuseTextQa.suspicious,reason:reuseTextQa.reason,strongWords:reuseTextQa.strongWords||[],reviewWords:reuseTextQa.reviewWords||[],needsVisualReview:Boolean(reuseTextQa.needsVisualReview),engine:reuseTextQa.engine}:{checked:false,reason:expectedMode==='real'?'not_checked':'mock_image'}}),{mediaMode:expectedMode,provider:selectedImageProvider,model:selectedImageMeta?.model || env.imageModel,reused:true});
         assetDetails.push({sceneNumber,path:p,mode:expectedMode,sizeBytes:asset.sizeBytes,valid:true,generatedAt:new Date(),reused:true,prompt:sceneImagePrompt,sourceVisualPrompt:scene.visualPrompt,resolution:`${VIDEO_WIDTH}x${VIDEO_HEIGHT}`,normalized:normalized.normalized});
         await updateJob(jobId,25+Math.round(((i+1)/story.scenes.length)*30),'ASSETS_GENERATING',`Reused valid scene ${i+1}/${story.scenes.length}.`);
       }
