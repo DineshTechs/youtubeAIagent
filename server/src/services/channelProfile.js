@@ -1,4 +1,9 @@
 const asText=(value,fallback='')=>String(value??'').trim()||fallback;
+export const HOOK_STYLES=['Curiosity','Question','Surprise','Emotional','Problem / Solution'];
+export const DEFAULT_DURATION_SEC=55;
+// Per-video defaults now live on the profile. Duration is clamped to Shorts-friendly bounds.
+export function normalizeDuration(value,fallback=DEFAULT_DURATION_SEC){const n=Number(value);return Number.isFinite(n)&&n>0?Math.max(20,Math.min(180,Math.round(n))):fallback;}
+export function normalizeHookStyle(value,fallback='Curiosity'){const v=String(value||'').trim();return HOOK_STYLES.find(h=>h.toLowerCase()===v.toLowerCase())||fallback;}
 const asList=value=>Array.isArray(value)?value.map(x=>String(x||'').trim()).filter(Boolean):[];
 
 export function buildChannelProfile(series={},overrides={}){
@@ -29,7 +34,7 @@ export function buildChannelProfile(series={},overrides={}){
     niche,subNiche:asText(saved.subNiche,''),premise:asText(series.premise,'Create original, useful content for this channel.'),
     audience:{description:audienceDescription,ageRange:asText(overrides.ageRange,asText(audienceSaved.ageRange,'')),knowledgeLevel:asText(audienceSaved.knowledgeLevel,'general'),interests:asList(audienceSaved.interests)},
     language,
-    content:{primaryFormat:format,formats:asList(contentSaved.formats).length?asList(contentSaved.formats):[format],tone:asText(overrides.tone,asText(contentSaved.tone,asText(saved.tone,'Engaging and audience-appropriate'))),storytellingApproach:asText(contentSaved.storytellingApproach,'Clear, coherent and niche-appropriate'),pacing:asText(contentSaved.pacing,'Dynamic but easy to follow'),hookStyle:asText(overrides.hookStyle,asText(contentSaved.hookStyle,'Curiosity')),callToAction:asText(contentSaved.callToAction,'Natural and relevant to the channel')},
+    content:{primaryFormat:format,formats:asList(contentSaved.formats).length?asList(contentSaved.formats):[format],tone:asText(overrides.tone,asText(contentSaved.tone,asText(saved.tone,'Engaging and audience-appropriate'))),storytellingApproach:asText(contentSaved.storytellingApproach,'Clear, coherent and niche-appropriate'),pacing:asText(contentSaved.pacing,'Dynamic but easy to follow'),hookStyle:normalizeHookStyle(asText(overrides.hookStyle,asText(contentSaved.hookStyle,'Curiosity'))),durationSec:normalizeDuration(overrides.durationSec??contentSaved.durationSec),callToAction:asText(contentSaved.callToAction,'Natural and relevant to the channel')},
     visual:{style:visualStyle,aspectRatio,colorPalette:asText(visualSaved.colorPalette,'Consistent with the channel identity'),realism:asText(visualSaved.realism,'Match the selected visual style'),subtitleSafeArea:visualSaved.subtitleSafeArea!==false,avoidTextInImages:visualSaved.avoidTextInImages!==false},
     narration:{voiceStyle:asText(overrides.voiceStyle,asText(narrationSaved.voiceStyle,'Natural, clear and engaging')),audience:audienceDescription,pace:asText(narrationSaved.pace,'Natural'),energy:asText(narrationSaved.energy,'Confident and engaging'),language},
     editorial:{safetyMode,factChecking:saved.editorial?.factChecking!==false,originalityRules:asList(saved.editorial?.originalityRules).length?asList(saved.editorial.originalityRules):['Create original scripts and visuals','Do not copy source-channel scripts, titles or distinctive creative work','Avoid unsupported factual claims']},

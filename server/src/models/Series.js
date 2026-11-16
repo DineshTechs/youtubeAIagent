@@ -13,7 +13,11 @@ const schema = new mongoose.Schema({
   channelResearch: { type: mongoose.Schema.Types.Mixed, default: null },
   contentStrategy: { type: mongoose.Schema.Types.Mixed, default: null },
   topicIdeas: { type: [String], default: [] },
-  topicCursor: { type: Number, default: 0 }
+  topicCursor: { type: Number, default: 0 },
+  // Deleted profiles that still have videos are archived (hidden), so older
+  // videos can still be continued, re-rendered and regenerated.
+  archived: { type: Boolean, default: false },
+  archivedAt: { type: Date, default: null }
 }, { timestamps: true });
 
 export default mongoose.model("Series", schema);

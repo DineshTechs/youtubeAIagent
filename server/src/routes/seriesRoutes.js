@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { listSeries, createSeries, updateSeries, activateSeries, getSeriesContext, researchSeriesChannel, researchChannel, seedUniverse } from "../controllers/seriesController.js";
+import { listSeries, createSeries, updateSeries, activateSeries, getSeriesContext, researchSeriesChannel, researchChannel, seedUniverse, deleteSeries } from "../controllers/seriesController.js";
 const router=Router();
 router.get("/", listSeries);
 router.post("/", createSeries);
 router.get("/:id/context", getSeriesContext);
 router.put("/:id", updateSeries);
 router.post("/:id/activate", activateSeries);
+router.delete("/:id", deleteSeries);
 router.post("/research-channel", researchChannel);
 router.post("/:id/research-channel", researchSeriesChannel);
 router.post("/seed", seedUniverse);

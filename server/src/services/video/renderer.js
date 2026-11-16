@@ -106,7 +106,29 @@ export async function getAudioDuration(audioFile){
   });
 }
 
-export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurations,audioFile,subtitlesFile,outDir,onProgress,width=1080,height=1920,fps=30,imageFit='cover',shouldCancel=null}){
+// Subtitle style from Settings. libass renders SRT on a 288-unit-high canvas,
+// so pixel values (relative to the output frame) are converted to that scale.
+// Defaults reproduce the previous hard-coded look: ~38-40 px text, 7% above the
+// bottom edge, centred. Nirmala UI (Windows) includes Devanagari glyphs;
+// Arial does not, so Hindi captions no longer depend on font fallback.
+export function buildSubtitleStyle({width=1080,height=1920,fontSizePx=38,fontName='Nirmala UI',position='bottom',offsetPct=7}={}){
+  const H=Math.max(1,Number(height)||1920), W=Math.max(1,Number(width)||1080);
+  const px=Math.max(16,Math.min(96,Number(fontSizePx)||38));
+  const fontSize=Number((px*288/H).toFixed(2));
+  const pct=Math.max(2,Math.min(40,Number(offsetPct)||7));
+  const marginV=Math.round(pct/100*288);
+  const marginH=H>=W?24:18; // unchanged side margins (same line wrapping as before)
+  // FFmpeg's force_style on SRT input uses LEGACY SSA alignment codes:
+  // 2 = bottom-centre, 6 = top-centre, 10 = middle-centre (not ASS numpad 8/5).
+  const alignment=position==='top'?6:position==='center'?10:2;
+  const safeFont=String(fontName||'Nirmala UI').replace(/[,:'"\\]/g,'').trim().slice(0,80)||'Nirmala UI';
+  return {
+    forceStyle:`FontName=${safeFont},FontSize=${fontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BorderStyle=1,Outline=0.8,Shadow=0,Alignment=${alignment},MarginL=${marginH},MarginR=${marginH},MarginV=${marginV},WrapStyle=2,Bold=0`,
+    summary:{fontName:safeFont,fontSizePx:px,position:position==='top'||position==='center'?position:'bottom',offsetPct:pct,assFontSize:fontSize,assMarginV:marginV,alignment}
+  };
+}
+
+export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurations,audioFile,subtitlesFile,outDir,onProgress,width=1080,height=1920,fps=30,imageFit='cover',shouldCancel=null,subtitlesEnabled=true,subtitleFontSize=38,subtitleFontName='Nirmala UI',subtitlePosition='bottom',subtitleOffsetPct=7}){
   if(!Array.isArray(sceneFiles)||sceneFiles.length===0) throw new Error('No scene assets are available for video rendering.');
   if(!Array.isArray(sceneAudioFiles)||sceneAudioFiles.length!==sceneFiles.length) throw new Error(`Scene narration audio set is incomplete (${sceneAudioFiles?.length||0}/${sceneFiles.length}).`);
   if(!existsSync(ffmpegPath)&&ffmpegPath!=='ffmpeg') throw new Error(`FFmpeg executable was not found at: ${ffmpegPath}`);
@@ -148,21 +170,16 @@ export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurat
   // selective scene regeneration. The Video document is updated with this path.
   const renderVersion=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
   const videoPath=path.join(outDir,`final-${renderVersion}.mp4`);
-  const canBurnSubtitles=Boolean(subtitlesFile&&isUsableFile(subtitlesFile));
+  const canBurnSubtitles=Boolean(subtitlesEnabled!==false&&subtitlesFile&&isUsableFile(subtitlesFile));
+  const subtitleStyle=buildSubtitleStyle({width,height,fontSizePx:subtitleFontSize,fontName:subtitleFontName,position:subtitlePosition,offsetPct:subtitleOffsetPct});
   if(canBurnSubtitles){
-    // Portrait Shorts profile: compact captions, horizontally centred and
-    // placed in the lower safe area (not the vertical middle).
-    const portrait = height >= width;
-    const subtitleFontSize = portrait ? 6 : 5;
-    const marginV = portrait ? 20 : 14;
-    const marginH = portrait ? 24 : 18;
     const subtitlePath=path.resolve(subtitlesFile).replace(/\\/g,'/').replace(/^([A-Za-z]):/,'$1\\:').replace(/'/g,"\\'");
-    const style=`FontName=Arial,FontSize=${subtitleFontSize},PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BorderStyle=1,Outline=0.8,Shadow=0,Alignment=2,MarginL=${marginH},MarginR=${marginH},MarginV=${marginV},WrapStyle=2,Bold=0`;
+    const style=subtitleStyle.forceStyle;
     const filter=`subtitles='${subtitlePath}':force_style='${style}'`;
     await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-map','0:v:0','-map','1:a:0','-vf',filter,'-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-shortest','-movflags','+faststart',videoPath],{shouldCancel});
   }else{
     await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','128k','-shortest',videoPath],{shouldCancel});
   }
   onProgress?.(95);
-  return {videoPath,audioFile:combinedAudio,subtitlesFile:canBurnSubtitles?subtitlesFile:null,subtitlesBurned:canBurnSubtitles,subtitleStyle:canBurnSubtitles?{fontSize:height>=width?6:5,alignment:'bottom-center',horizontalAlignment:'center',verticalPosition:'lower-safe-area',maxLines:2,profile:height>=width?'shorts-9:16':'landscape'}:null,durationSec:Number(totalDuration.toFixed(3)),sceneDurations:durations,sceneCount:sceneFiles.length,narrationSynchronized:true};
+  return {videoPath,audioFile:combinedAudio,subtitlesFile:canBurnSubtitles?subtitlesFile:null,subtitlesBurned:canBurnSubtitles,subtitleStyle:canBurnSubtitles?{...subtitleStyle.summary,maxLines:2,profile:height>=width?'shorts-9:16':'landscape'}:null,subtitlesDisabledInSettings:subtitlesEnabled===false,durationSec:Number(totalDuration.toFixed(3)),sceneDurations:durations,sceneCount:sceneFiles.length,narrationSynchronized:true};
 }

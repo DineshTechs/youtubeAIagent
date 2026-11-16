@@ -28,7 +28,8 @@ function defaults() {
       mockMode: env.mediaMock,
       pollinationsSafe: String(env.pollinationsSafe).toLowerCase() === 'true'
     },
-    video: { width: 1080, height: 1920, fps: 30, imageFit: 'contain-blur', subtitlesEnabled: true, subtitleFontSize: 38, subtitleMarginV: 85, subtitleFontName: 'Nirmala UI' },
+    video: { width: 1080, height: 1920, fps: 30, imageFit: 'contain-blur', subtitlesEnabled: true, subtitleFontSize: 38, subtitleMarginV: 85, subtitleFontName: 'Nirmala UI', subtitlePosition: 'bottom', subtitleOffsetPct: 7 },
+    quality: { ocrMaxRetries: 2 },
     retention: { autoDeleteEnabled: true, days: 30 },
     visualDirector: { enabled: true, realism: true, continuity: true, eyeCatching: true, avoidTextInImages: true }
   };
@@ -163,6 +164,7 @@ export async function getAISettings() {
     text: settings.text,
     video: settings.video,
     retention: settings.retention || {autoDeleteEnabled:true,days:30},
+    quality: { ocrMaxRetries: Number.isFinite(Number(settings.quality?.ocrMaxRetries)) ? Number(settings.quality.ocrMaxRetries) : 2 },
     visualDirector: settings.visualDirector
   };
 }
@@ -195,8 +197,11 @@ export async function updateAIConfig(patch = {}) {
     if (patch.video.subtitlesEnabled != null) allowed['video.subtitlesEnabled']=Boolean(patch.video.subtitlesEnabled);
     if (patch.video.subtitleFontSize != null) allowed['video.subtitleFontSize']=Math.max(28,Math.min(48,Number(patch.video.subtitleFontSize)));
     if (patch.video.subtitleMarginV != null) allowed['video.subtitleMarginV']=Math.max(35,Math.min(250,Number(patch.video.subtitleMarginV)));
-    if (typeof patch.video.subtitleFontName === 'string' && patch.video.subtitleFontName.trim()) allowed['video.subtitleFontName']=patch.video.subtitleFontName.trim().slice(0,80);
+    if (typeof patch.video.subtitleFontName === 'string' && patch.video.subtitleFontName.trim()) allowed['video.subtitleFontName']=patch.video.subtitleFontName.trim().replace(/[,:'"\\]/g,'').slice(0,80);
+    if (['bottom','center','top'].includes(patch.video.subtitlePosition)) allowed['video.subtitlePosition']=patch.video.subtitlePosition;
+    if (patch.video.subtitleOffsetPct != null && Number.isFinite(Number(patch.video.subtitleOffsetPct))) allowed['video.subtitleOffsetPct']=Math.max(2,Math.min(40,Number(patch.video.subtitleOffsetPct)));
   }
+  if (patch.quality?.ocrMaxRetries != null && Number.isFinite(Number(patch.quality.ocrMaxRetries))) allowed['quality.ocrMaxRetries']=Math.max(0,Math.min(3,Math.round(Number(patch.quality.ocrMaxRetries))));
   if (patch.retention) {
     if (patch.retention.autoDeleteEnabled != null) allowed['retention.autoDeleteEnabled']=Boolean(patch.retention.autoDeleteEnabled);
     if (patch.retention.days != null) allowed['retention.days']=Math.max(1,Math.min(3650,Number(patch.retention.days)));

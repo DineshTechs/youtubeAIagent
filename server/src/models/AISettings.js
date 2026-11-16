@@ -53,7 +53,15 @@ const schema = new mongoose.Schema({
     subtitlesEnabled: { type: Boolean, default: true },
     subtitleFontSize: { type: Number, default: 38, min: 28, max: 48 },
     subtitleMarginV: { type: Number, default: 85, min: 35, max: 250 },
-    subtitleFontName: { type: String, default: 'Nirmala UI' }
+    subtitleFontName: { type: String, default: 'Nirmala UI' },
+    // Where captions sit, and their distance from that edge in % of frame height.
+    // 7% from the bottom matches the previous hard-coded placement.
+    subtitlePosition: { type: String, enum: ['bottom', 'center', 'top'], default: 'bottom' },
+    subtitleOffsetPct: { type: Number, default: 7, min: 2, max: 40 }
+  },
+  quality: {
+    // Clean-image regenerations allowed after OCR reads text in a scene image.
+    ocrMaxRetries: { type: Number, default: 2, min: 0, max: 3 }
   },
   retention: {
     autoDeleteEnabled: { type: Boolean, default: true },

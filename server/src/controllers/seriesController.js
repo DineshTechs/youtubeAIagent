@@ -2,9 +2,11 @@ import Series from "../models/Series.js";
 import Character from "../models/Character.js";
 import Story from "../models/Story.js";
 import { studyChannel } from "../services/youtubeChannelResearch.js";
+import GenerationJob from "../models/GenerationJob.js";
+import { removeSeries, ProfileRemovalError } from "../services/seriesRemoval.js";
 
 export async function listSeries(req, res, next) {
-  try { res.json(await Series.find().sort({ active: -1, createdAt: -1 })); } catch (e) { next(e); }
+  try { res.json(await Series.find({ archived: { $ne: true } }).sort({ active: -1, updatedAt: -1 })); } catch (e) { next(e); }
 }
 
 export async function createSeries(req, res, next) {
@@ -24,7 +26,7 @@ export async function updateSeries(req, res, next) {
 export async function activateSeries(req,res,next){
   try{
     const target=await Series.findById(req.params.id);
-    if(!target)return res.status(404).json({error:'Series not found'});
+    if(!target||target.archived)return res.status(404).json({error:'Series not found'});
     await Series.updateMany({_id:{$ne:target._id}},{$set:{active:false}});
     target.active=true; await target.save(); res.json(target);
   }catch(e){next(e);}
@@ -116,4 +118,9 @@ export async function seedUniverse(req, res, next) {
     }
     res.json({ series, seeded: true });
   } catch (e) { next(e); }
+}
+
+export async function deleteSeries(req,res,next){
+  try{ res.json({deleted:true,...await removeSeries({Series,Story,Character,GenerationJob},req.params.id)}); }
+  catch(e){ if(e instanceof ProfileRemovalError) return res.status(e.status).json({error:e.message}); next(e); }
 }

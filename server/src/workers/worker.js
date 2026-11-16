@@ -29,6 +29,7 @@ function ocrSummary(qa){
   return words.length?words.map(w=>`"${w.text}" ${w.confidence}%`).join(', '):`"${String(qa?.text||'').slice(0,80)}"`;
 }
 let currentJobId=null;
+export function currentWorkerJob(){return currentJobId?String(currentJobId):null;}
 
 async function traceStage(jobId, stage, input, work, meta={}){
   const stageId=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
@@ -113,7 +114,7 @@ async function processJob(job){
       await setVideoStatus(video._id,'ASSETS_GENERATING','Resuming from saved assets.','clear',attempt);
     }else{
       await updateJob(jobId,2,'PLANNING','Loading active universe.');
-      series=job.payload?.seriesId ? await Series.findById(job.payload.seriesId) : await Series.findOne({active:true});
+      series=job.payload?.seriesId ? await Series.findById(job.payload.seriesId) : await Series.findOne({active:true,archived:{$ne:true}}).sort({updatedAt:-1});
       if(!series) throw new Error('No active channel profile. Create or select a channel in Channel / Niche settings.');
       channelProfile=buildChannelProfile(series,{...(job.payload||{}),channelProfile:job.payload?.channelProfile||series.channelProfile});
       characters=await Character.find({seriesId:series._id,active:true});
@@ -386,19 +387,20 @@ async function processJob(job){
           try {
             const strictTextQa=String(process.env.IMAGE_TEXT_QA_STRICT||'true').toLowerCase()!=='false';
             const cleanRetryBasePrompt=usedPrompt;
-            for(let qaAttempt=0;qaAttempt<=2;qaAttempt++){
+            const maxOcrRetries=Math.max(0,Math.min(3,Number(aiMedia.quality?.ocrMaxRetries??2)));
+            for(let qaAttempt=0;qaAttempt<=maxOcrRetries;qaAttempt++){
               imageTextQa=await inspectImageText(p,{strict:strictTextQa,minWords:2,language:channelProfile?.language||series.language});
               if(!imageTextQa.suspicious) break;
-              if(qaAttempt===2){
-                throw new Error(`Scene ${sceneNumber} still contains unwanted text after 2 regeneration attempts (${imageTextQa.reason}; OCR read ${ocrSummary(imageTextQa)}).`);
+              if(qaAttempt===maxOcrRetries){
+                throw new Error(`Scene ${sceneNumber} still contains unwanted text after ${maxOcrRetries} regeneration attempt(s) (${imageTextQa.reason}; OCR read ${ocrSummary(imageTextQa)}).`);
               }
-              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR read text in the image (${imageTextQa.reason}; ${ocrSummary(imageTextQa)}). Regenerating image, attempt ${qaAttempt+1}/2.`,level:'warning'}}});
+              await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: OCR read text in the image (${imageTextQa.reason}; ${ocrSummary(imageTextQa)}). Regenerating image, attempt ${qaAttempt+1}/${maxOcrRetries}.`,level:'warning'}}});
               // Rebuild from the original scene prompt (no stacking) and keep within the
               // provider's prompt limit; the clean-image correction is placed first.
               const retryPrompt=buildCleanImageRetryPrompt(cleanRetryBasePrompt,{maxChars:promptLimitFor(selectedImageProvider),promptStyle:imagePromptStyle});
               let retryPath;
               try{ retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize}); }
-              catch(providerError){ const e=new Error(`Scene ${sceneNumber} clean-image regeneration ${qaAttempt+1}/2 failed at the image provider (OCR itself worked): ${providerError.message}`); e.code='IMAGE_PROVIDER_FAILED'; throw e; }
+              catch(providerError){ const e=new Error(`Scene ${sceneNumber} clean-image regeneration ${qaAttempt+1}/${maxOcrRetries} failed at the image provider (OCR itself worked): ${providerError.message}`); e.code='IMAGE_PROVIDER_FAILED'; throw e; }
               if(retryPath && path.resolve(String(retryPath))!==path.resolve(p)) await fs.copyFile(String(retryPath),p);
               usedPrompt=retryPrompt;
               normalized=await normalizeSceneImage(p);
@@ -495,7 +497,7 @@ async function processJob(job){
     await setVideoStatus(video._id,'VIDEO_RENDERING','Rendering video.','clear',attempt);
     await updateJob(jobId,65,'VIDEO_RENDERING','Rendering vertical MP4 with FFmpeg.');
     let lastProgress=-1;
-    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:aiMedia.video?.subtitlesEnabled??true,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
+    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:aiMedia.video?.subtitlesEnabled??true,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',subtitlePosition:aiMedia.video?.subtitlePosition||'bottom',subtitleOffsetPct:aiMedia.video?.subtitleOffsetPct??7,shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
       const progress=65+Math.round(p*.25);
       if(progress===lastProgress)return;
       lastProgress=progress;

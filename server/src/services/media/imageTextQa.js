@@ -38,7 +38,13 @@ async function getWorker(language = 'eng+hin') {
   if (!workers.has(lang)) {
     const promise = (async () => {
       const { createWorker } = await import('tesseract.js');
-      return createWorker(lang, undefined, { langPath: SERVER_ROOT, gzip: false });
+      // errorHandler is REQUIRED: without it tesseract.js re-throws every failed OCR
+      // job as an uncaught exception in the main process, which kills the whole
+      // backend (seen 2026-11-16: backend died during scene-1 OCR, job "interrupted").
+      // With it, the failed job only rejects and the caller fails closed.
+      return createWorker(lang, undefined, { langPath: SERVER_ROOT, gzip: false, errorHandler: error => {
+        console.error(`[OCR] tesseract worker error (${lang}):`, String(error?.message || error).slice(0, 500));
+      } });
     })().catch(error => { workers.delete(lang); throw error; });
     workers.set(lang, promise);
   }
@@ -140,7 +146,33 @@ export function ocrRegions(size, strips = 4) {
   return regions;
 }
 
+// Throw away an OCR engine after any failure (a WebAssembly abort leaves it
+// unusable) so the next check starts with a fresh one.
+async function discardWorker(lang) {
+  const promise = workers.get(lang);
+  workers.delete(lang);
+  if (promise) { try { const w = await promise; await w.terminate(); } catch {} }
+}
+
+export const OCR_TIMEOUT_MS = 120_000;
+function withTimeout(promise, ms, what) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`)), ms); timer.unref?.(); })])
+    .finally(() => clearTimeout(timer));
+}
+
 export async function inspectImageText(imagePath, options = {}) {
+  const lang = 'eng+hin';
+  try {
+    return await withTimeout(inspectImageTextOnce(imagePath, options), options.timeoutMs || OCR_TIMEOUT_MS, 'OCR');
+  } catch (error) {
+    await discardWorker(lang);
+    // Never report a failed OCR as clean: the caller treats this as "not approved".
+    throw new Error(`OCR failed: ${String(error?.message || error).replace(/^Error:\s*/, '').slice(0, 300)}`);
+  }
+}
+
+async function inspectImageTextOnce(imagePath, options = {}) {
   const stat = await fs.stat(imagePath);
   if (!stat.isFile() || stat.size < 100) throw new Error('OCR received a missing or invalid image file.');
   // Always inspect both English and Hindi so text leakage is not missed merely
