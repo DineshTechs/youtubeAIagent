@@ -19,6 +19,7 @@ import {optimizeForGeneration} from '../services/youtubeSkills/index.js';
 import {inspectImageText} from '../services/media/imageTextQa.js';
 import {buildChannelProfile,channelProfileSummary} from '../services/channelProfile.js';
 import {traceSafe} from '../utils/traceSafe.js';
+import {buildVisualDirectorInstruction,normalizeVisualPlan,isCurrentVisualPlan} from '../utils/visualPlan.js';
 import {recoverInterruptedJobs,HEARTBEAT_INTERVAL_MS} from './recovery.js';
 import {buildCleanImageRetryPrompt,promptLimitFor,promptStyleFor,buildSceneImagePrompt as buildSceneImagePromptPure} from '../utils/imagePrompt.js';
 
@@ -229,7 +230,8 @@ async function processJob(job){
       const enabled=settings?.visualDirector?.enabled !== false;
       if(!enabled) return null;
       const existing=storyDoc?.pipelineData?.visualDirectorPlan;
-      if(existing?.scenes?.length===storyDoc.scenes.length) return existing;
+      // Reuse only a current (v2, English) plan; older/Hindi plans are re-planned.
+      if(isCurrentVisualPlan(existing,storyDoc.scenes.length)) return existing;
       if(!activeProvider || typeof activeProvider.generateJson!=='function') return null;
       const charactersForPlan=characters.map(c=>({name:c.name,appearance:c.appearance||'',personality:c.personality||''}));
       const input={
@@ -238,30 +240,15 @@ async function processJob(job){
         characters:charactersForPlan,
         scenes:storyDoc.scenes.map(s=>({sceneNumber:s.sceneNumber,narration:s.narration,visualPrompt:s.visualPrompt,onScreenText:s.onScreenText,durationSec:s.durationSec}))
       };
-      const instruction=`Act as the visual director for a YouTube video for this channel profile. Translate every narration line into a literal, recognizable visual moment suitable for the channel's niche, audience, tone and selected visual style. The narration is the source of truth: identify the exact named subjects, what they are doing, where they are, and what changes in this moment. Do not replace specific events with generic portraits, decorative scenery, abstract symbols or unrelated stock-style imagery. Choose a camera shot that clearly shows the narrated action and important objects; vary wide, medium and close-up shots naturally. Keep recurring hosts, products, locations or fictional characters visually consistent where applicable. For every scene return sceneNumber, subject, action, setting, importantObjects, emotion, camera, composition and visualPrompt. Make each visualPrompt concrete and self-contained, matching aspect ratio ${profile?.visual?.aspectRatio||'9:16'} and visual style ${profile?.visual?.style||seriesDoc.visualStyle||'cinematic visuals'}. If subtitles are enabled, reserve a visually quiet lower safe area without obscuring the main action. Do not put unrequested text in the image. Do not impose children's-content styling or restrictions unless the channel profile safetyMode is kids-and-family. Return only JSON with shape {"scenes":[...]} and no markdown.`;
-      const result=await activeProvider.generateJson(instruction,input,'visual director');
-      if(!result || !Array.isArray(result.scenes)) throw new Error('Visual Director returned an invalid scene plan.');
-      const byNumber=new Map(result.scenes.map(x=>[Number(x.sceneNumber),x]));
-      const normalized=storyDoc.scenes.map((scene,i)=>{
-        const n=Number(scene.sceneNumber||i+1);
-        const plan=byNumber.get(n);
-        if(!plan) throw new Error(`Visual Director did not return a plan for scene ${n}.`);
-        const vp=limitPromptText(plan.visualPrompt,1200);
-        if(!vp) throw new Error(`Visual Director returned an empty visual prompt for scene ${n}.`);
-        scene.visualPrompt=vp;
-        return {
-          sceneNumber:n,
-          subject:limitPromptText(plan.subject,400),
-          action:limitPromptText(plan.action,500),
-          setting:limitPromptText(plan.setting,400),
-          importantObjects:limitPromptText(plan.importantObjects,500),
-          emotion:limitPromptText(plan.emotion,250),
-          camera:limitPromptText(plan.camera,350),
-          composition:limitPromptText(plan.composition,500),
-          visualPrompt:vp
-        };
-      });
-      storyDoc.pipelineData={...(storyDoc.pipelineData||{}),visualDirectorPlan:{version:1,createdAt:new Date(),scenes:normalized}};
+      let plan;
+      try{
+        plan=normalizeVisualPlan(await activeProvider.generateJson(buildVisualDirectorInstruction(profile,seriesDoc),input,'visual director'),storyDoc.scenes);
+      }catch(firstError){
+        // One stricter retry (most often: the model answered in the narration language).
+        plan=normalizeVisualPlan(await activeProvider.generateJson(buildVisualDirectorInstruction(profile,seriesDoc,{strict:true}),input,'visual director (retry)'),storyDoc.scenes);
+      }
+      for(const p of plan.scenes){const scene=storyDoc.scenes.find((x,i)=>Number(x.sceneNumber||i+1)===p.sceneNumber);if(scene)scene.visualPrompt=p.visualPrompt;}
+      storyDoc.pipelineData={...(storyDoc.pipelineData||{}),visualDirectorPlan:plan};
       await storyDoc.save();
       return storyDoc.pipelineData.visualDirectorPlan;
     }

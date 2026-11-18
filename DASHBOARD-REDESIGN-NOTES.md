@@ -64,3 +64,19 @@
   later checks work. Regression test: `server/test/ocrResilience.test.js` (real engine).
 - New: fatal errors are appended to `server/storage/logs/backend-crash.log` (git-ignored)
   with the active job id (`uncaughtExceptionMonitor`; normal crash behaviour unchanged).
+
+## Fix (2026-11-16 05:45): images must match the narration
+Found in real jobs: for Hindi profiles the story's visual prompts AND the Visual Director
+plan were in Hindi, which FLUX cannot read (generic/unrelated images); prompts carried
+video-editing directions ("camera zooms… then cuts to a bold text overlay", style "quick
+zooms on speaker's face") that a still image cannot show (generic face close-ups, lettering).
+- Visual Director plan v2 (`server/src/utils/visualPlan.js`): all fields in English, one still
+  frame per scene that literally illustrates the narration, plus `narrationMeaning` (English).
+  Non-English answers are retried once with stricter wording; old v1/Hindi plans are re-planned.
+- Story generation (Gemini/OpenAI/OpenAI-compatible) now asks for English, single-frame
+  visualPrompts without on-screen text.
+- Image prompt builder: prefers English descriptions, adds "illustrates: <narration meaning>",
+  strips zooms/cuts/transitions/text-overlay directions, uses an English still-image style,
+  and drops non-English words for FLUX.
+- Dashboard → Video details → Scenes: shows "Image should show: …" and the exact prompt sent.
+- Existing videos: use "Regenerate image" on a scene (re-plans in English first).

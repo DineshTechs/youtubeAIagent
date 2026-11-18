@@ -307,3 +307,7 @@ details summary{cursor:pointer;color:var(--muted);font-weight:600}
 @media (max-width:1180px){.createGrid{grid-template-columns:1fr}.statGrid.wide{grid-template-columns:repeat(3,1fr)}.formGrid.four{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:900px){.sidebar{width:72px;padding:18px 10px}.brand div:last-child,.navItem span,.navBadge,.sideFooter{display:none}.navItem{justify-content:center}main{padding:20px 16px}.profilesGrid,.settingsLayout,.twoCol,.overviewGrid{grid-template-columns:1fr}.profileList,.subNav{position:static}.subNav{grid-auto-flow:column;overflow-x:auto}.kvGrid{grid-template-columns:1fr}}
 @media (max-width:640px){.formGrid,.formGrid.four,.toggleGrid{grid-template-columns:1fr}.videoRow{grid-template-columns:auto 1fr}.videoActions{grid-column:1/-1;justify-content:flex-start}.statGrid.wide{grid-template-columns:repeat(2,1fr)}}
+
+.sceneMeaning{color:var(--text)!important;font-size:12px;background:var(--infoSoft);border-radius:7px;padding:5px 8px;max-height:none!important}
+.scenePrompt summary{font-size:11.5px}
+.scenePrompt p{font-size:11.5px;color:var(--faint);max-height:9em;overflow:auto}

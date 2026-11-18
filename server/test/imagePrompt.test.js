@@ -42,7 +42,7 @@ test('scene image prompt never contains the channel niche or "YouTube" (regressi
 });
 
 test('quoted phrases (any script) are removed so they are not drawn as lettering', () => {
-  assert.equal(cleanVisualText('A poster on the wall reading "Never Give Up", rain outside'), 'A poster on the wall , rain outside');
+  assert.equal(cleanVisualText('A poster on the wall reading "Never Give Up", rain outside'), 'A poster on the wall, rain outside');
   assert.doesNotMatch(cleanVisualText('a sign that says “कभी हार मत मानो” near a door'), /कभी|says/);
   assert.equal(cleanVisualText("the hero's quiet room"), "the hero's quiet room", 'apostrophes are kept');
 });
