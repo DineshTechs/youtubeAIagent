@@ -1,21 +1,28 @@
+import mongoose from 'mongoose';
 import Video from '../models/Video.js';
+import Story from '../models/Story.js';
+import Series from '../models/Series.js';
 import path from 'node:path';
 import GenerationJob from '../models/GenerationJob.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
 import { permanentlyDeleteVideo } from '../services/video/videoCleanup.js';
 import {approvalBlockReason} from '../utils/approvalGate.js';
+import {resolveVideoProfiles,profileVideoFilter,countByProfile} from '../services/videoProfiles.js';
+
+const profileFilter=seriesId=>profileVideoFilter(seriesId,{Story,isValidId:id=>mongoose.isValidObjectId(id)});
+const attachProfiles=videos=>resolveVideoProfiles(videos,{Story,Series});
 
 export async function listVideos(req,res,next){
   try{
-    const limit=Math.min(Math.max(Number(req.query.limit)||50,1),100);
+    const limit=Math.min(Math.max(Number(req.query.limit)||50,1),200);
     const status=req.query.status;
-    const filter=status&&status!=='ALL'?{status}:{};
+    const filter={...(status&&status!=='ALL'?{status}:{}),...(await profileFilter(req.query.seriesId))};
     const videos=await Video.find(filter).sort({createdAt:-1}).limit(limit).lean();
     const ids=videos.map(v=>v._id);
     const jobs=ids.length?await GenerationJob.find({videoId:{$in:ids}}).sort({createdAt:-1}).lean():[];
     const latestJob=new Map();
     for(const job of jobs){const key=String(job.videoId);if(!latestJob.has(key))latestJob.set(key,job);}
-    res.json(videos.map(v=>({...v,latestJob:latestJob.get(String(v._id))||null})));
+    res.json(await attachProfiles(videos.map(v=>({...v,latestJob:latestJob.get(String(v._id))||null}))));
   }catch(e){next(e);}
 }
 
@@ -25,7 +32,8 @@ export async function getVideo(req,res,next){try{
   const jobs=await GenerationJob.find({videoId:v._id}).sort({createdAt:-1}).limit(10).lean();
   const data=v.toObject();
   const sceneAssets=(data.mediaAssetDetails||[]).map(asset=>({...asset,fileName:asset.path?path.basename(asset.path):null}));
-  res.json({...data,sceneAssets,latestJob:jobs[0]||null,jobs});
+  const [withProfile]=await attachProfiles([data]);
+  res.json({...data,profile:withProfile.profile,sceneAssets,latestJob:jobs[0]||null,jobs});
 }catch(e){next(e);}}
 
 export async function approveVideo(req,res,next){try{
@@ -159,8 +167,10 @@ export async function getVideoStats(_req,res,next){try{
   const grouped=await Video.aggregate([{$group:{_id:'$status',count:{$sum:1}}}]);
   const stats={total:0};
   for(const x of grouped){stats[x._id]=x.count;stats.total+=x.count;}
+  // Per-profile counts for the Videos page filter chips.
+  const byProfile=countByProfile(await attachProfiles(await Video.find({}).select('status seriesId storyId').lean()));
   const activeJobs=await GenerationJob.countDocuments({status:{$in:['QUEUED','RUNNING']}});
   const failedJobs=await GenerationJob.countDocuments({status:'FAILED'});
   const cancelledJobs=await GenerationJob.countDocuments({status:'CANCELLED'});
-  res.json({stats,activeJobs,failedJobs,cancelledJobs});
+  res.json({stats,byProfile,activeJobs,failedJobs,cancelledJobs});
 }catch(e){next(e);}}

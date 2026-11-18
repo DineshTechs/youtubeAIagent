@@ -200,7 +200,24 @@ function Icon({name,size=18}){return <svg width={size} height={size} viewBox="0 
 const FORMAT_OPTIONS=['Explainer','Story Short','Storytelling','Documentary','Tutorial','Commentary','Review','News & Analysis','Interview','Listicle','Case Study','Fact Short','Educational Short'];
 const HOOK_OPTIONS=['Curiosity','Question','Surprise','Emotional','Problem / Solution'];
 const DURATION_OPTIONS=[30,35,45,55,60,90];
-const DEFAULT_PROFILE_FORM={name:'',premise:'',niche:'',targetAge:'General audience',language:'English',visualStyle:'Cinematic, high-quality visuals',tone:'Engaging and informative',contentFormat:'Explainer',aspectRatio:'9:16',voiceStyle:'Natural, clear and engaging',durationSec:55,hookStyle:'Curiosity'};
+const PROFILE_SECTIONS=[['channel','Channel'],['content','Content rules'],['voice','Voice & captions'],['youtube','YouTube'],['research','Research']];
+const EMPTY_YT_ACCOUNT={clientId:'',hasClientSecret:false,redirectUri:'',defaultRedirectUri:'http://127.0.0.1:4000/api/youtube/callback',publishEnabled:false,configured:false,connected:false};
+const YT_CATEGORIES=[['1','Film & Animation'],['2','Autos & Vehicles'],['10','Music'],['15','Pets & Animals'],['17','Sports'],['19','Travel & Events'],['20','Gaming'],['22','People & Blogs'],['23','Comedy'],['24','Entertainment'],['25','News & Politics'],['26','Howto & Style'],['27','Education'],['28','Science & Technology'],['29','Nonprofits & Activism']];
+const VOICE_PRESETS={groq:['autumn','diana','hannah','austin','daniel','troy'],openai:['alloy','ash','ballad','coral','echo','fable','nova','onyx','sage','shimmer','verse'],gemini:['Kore','Zephyr','Puck','Charon','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat']};
+const TIMEZONES=['Asia/Kolkata','UTC','Europe/London','Europe/Berlin','America/New_York','America/Chicago','America/Los_Angeles','Asia/Dubai','Asia/Singapore','Asia/Tokyo','Australia/Sydney'];
+const joinList=v=>Array.isArray(v)?v.filter(Boolean).join('\n'):String(v||'');
+const splitList=v=>[...new Set(String(v||'').split(/[\n,]/).map(x=>x.trim()).filter(Boolean))];
+const splitLines=v=>[...new Set(String(v||'').split(/\n/).map(x=>x.trim()).filter(Boolean))];
+// Mirrors server/src/services/uploadSettings.js defaults so the form shows what will be used.
+function uploadFormFrom(u={},{kids=false}={}){
+  const b=(v,d)=>typeof v==='boolean'?v:d;
+  return {privacyStatus:['private','unlisted','public'].includes(u.privacyStatus)?u.privacyStatus:'private',categoryId:YT_CATEGORIES.some(([id])=>id===String(u.categoryId))?String(u.categoryId):(kids?'1':'24'),
+    madeForKids:b(u.madeForKids,kids),containsSyntheticMedia:b(u.containsSyntheticMedia,true),notifySubscribers:b(u.notifySubscribers,true),embeddable:b(u.embeddable,true),publicStatsViewable:b(u.publicStatsViewable,true),
+    license:u.license==='creativeCommon'?'creativeCommon':'youtube',titleTemplate:u.titleTemplate||'{title}',tags:(Array.isArray(u.tags)?u.tags:[]).join(', '),hashtags:(Array.isArray(u.hashtags)?u.hashtags:[]).map(h=>`#${h}`).join(' '),
+    descriptionFooter:u.descriptionFooter||'',seoKeywords:(Array.isArray(u.seoKeywords)?u.seoKeywords:[]).join(', '),playlistId:u.playlistId||'',scheduleTime:u.scheduleTime||'',timezone:u.timezone||'Asia/Kolkata'};
+}
+function uploadPayload(u){return {...u,tags:splitList(u.tags),seoKeywords:splitList(u.seoKeywords),hashtags:String(u.hashtags||'').split(/[\s,]+/).map(h=>h.replace(/^#+/,'')).filter(Boolean),titleTemplate:u.titleTemplate.trim()||'{title}',playlistId:u.playlistId.trim(),descriptionFooter:u.descriptionFooter.trim()};}
+const DEFAULT_PROFILE_FORM={name:'',premise:'',niche:'',targetAge:'General audience',language:'English',visualStyle:'Cinematic, high-quality visuals',tone:'Engaging and informative',contentFormat:'Explainer',aspectRatio:'9:16',voiceStyle:'Natural, clear and engaging',durationSec:55,hookStyle:'Curiosity',callToAction:'',rules:'',avoidTopics:'',topicIdeas:'',subtitles:'default',subtitlePosition:'default',voices:{},upload:uploadFormFrom({})};
 const KIDS_RE=/kids?|children|preschool|toddler/i;
 
 // One place that turns a saved series into the editable profile form
@@ -218,7 +235,13 @@ function formFromSeries(x){
     aspectRatio:cp.visual?.aspectRatio||'9:16',
     voiceStyle:cp.narration?.voiceStyle||'Natural, clear and engaging',
     durationSec:Number(cp.content?.durationSec)||55,
-    hookStyle:cp.content?.hookStyle||'Curiosity'
+    hookStyle:cp.content?.hookStyle||'Curiosity',
+    callToAction:cp.content?.callToAction&&cp.content.callToAction!=='Natural and relevant to the channel'?cp.content.callToAction:'',
+    rules:joinList(x.rules),avoidTopics:joinList(cp.editorial?.avoidTopics),topicIdeas:joinList(x.topicIdeas),
+    subtitles:['on','off'].includes(cp.visual?.subtitles)?cp.visual.subtitles:'default',
+    subtitlePosition:['bottom','center','top'].includes(cp.visual?.subtitlePosition)?cp.visual.subtitlePosition:'default',
+    voices:Object.fromEntries(Object.entries(cp.narration?.voices||{}).filter(([,v])=>v)),
+    upload:uploadFormFrom(x.uploadSettings||{},{kids:cp.editorial?.safetyMode==='kids-and-family'||KIDS_RE.test(`${x.niche||''} ${cp.audience?.description||''}`)})
   };
 }
 function sameForm(a,b){return JSON.stringify(a)===JSON.stringify(b);}
@@ -242,7 +265,7 @@ function VideoRow({v,onOpen,onApprove,onCancel,onRetry,onDelete,compact}){
     <button className="thumb" onClick={()=>onOpen(v._id)} aria-label={`Open ${v.title}`}>{thumb?<img src={thumb} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display='none'}}/>:<span>{(v.title||'?').slice(0,1)}</span>}</button>
     <div className="videoInfo">
       <div className="videoTitleLine"><h4 onClick={()=>onOpen(v._id)}>{v.title||'Untitled video'}</h4><StatusPill status={v.status}/></div>
-      <small className="muted">{v.durationSec?`${Math.round(v.durationSec)} s`:'— s'} · {timeAgo(v.updatedAt)}{j?.retryCount?` · attempt #${j.retryCount+1}`:''}{v.qa?.score!=null?` · QA ${v.qa.score}/100`:''}</small>
+      <small className="muted">{v.profile&&<span className={`profileTag ${v.profile.archived?'archived':''}`}>{v.profile.name}</span>}{v.durationSec?`${Math.round(v.durationSec)} s`:'— s'} · {timeAgo(v.updatedAt)}{j?.retryCount?` · attempt #${j.retryCount+1}`:''}{v.qa?.score!=null?` · QA ${v.qa.score}/100`:''}</small>
       {j&&active&&<div className="videoProgress"><div className="miniBar"><i style={{width:`${pct(j)}%`}}/></div><span>{label(j.step||j.status)} · {pct(j)}%</span></div>}
       {!compact&&j&&!active&&['FAILED','CANCELLED'].includes(v.status)&&<JobStepProgress job={j}/>}
       {v.error&&<div className="videoError">{v.error}</div>}
@@ -251,6 +274,7 @@ function VideoRow({v,onOpen,onApprove,onCancel,onRetry,onDelete,compact}){
       <button className="ghost" onClick={()=>onOpen(v._id)}>Details</button>
       {!compact&&videoFileUrl(v)&&<a className="btnLink" href={videoFileUrl(v)} target="_blank" rel="noreferrer">Preview</a>}
       {v.status==='AWAITING_APPROVAL'&&<button onClick={()=>onApprove(v._id)}>Approve</button>}
+      {v.status==='APPROVED'&&!compact&&<button onClick={()=>onOpen(v._id,'youtube')}>Upload</button>}
       {active&&(j?.cancelRequested?<button className="danger" disabled>Stopping…</button>:<button className="danger" onClick={()=>onCancel(v._id)}>Cancel</button>)}
       {['FAILED','CANCELLED'].includes(v.status)&&!active&&<button onClick={()=>onRetry(v._id)}>Continue</button>}
       {!compact&&<button className="danger ghost" onClick={()=>onDelete(v._id)}>Delete</button>}
@@ -258,15 +282,79 @@ function VideoRow({v,onOpen,onApprove,onCancel,onRetry,onDelete,compact}){
   </article>;
 }
 
+async function ytFetch(path,options={}){
+  const r=await fetch(`${API}${path}`,{cache:'no-store',...options});
+  const text=await r.text();let j={};try{j=text?JSON.parse(text):{};}catch{j={error:text||`HTTP ${r.status}`};}
+  if(!r.ok)throw new Error(j.error||`Request failed (${r.status})`);return j;
+}
+function toLocalInput(d){if(!d)return '';const x=new Date(d);if(Number.isNaN(x.getTime()))return '';const p=n=>String(n).padStart(2,'0');return `${x.getFullYear()}-${p(x.getMonth()+1)}-${p(x.getDate())}T${p(x.getHours())}:${p(x.getMinutes())}`;}
+// Upload one approved video using its profile's YouTube defaults (editable here).
+function YouTubePanel({video,onDone,onEditProfile}){
+  const [info,setInfo]=useState(null),[err,setErr]=useState(''),[busy,setBusy]=useState(false),[result,setResult]=useState(null);
+  const [form,setForm]=useState({title:'',description:'',tags:'',privacyStatus:'private',when:'now',publishAt:''}),[seoBusy,setSeoBusy]=useState(false);
+  function applyInfo(j){setInfo(j);setForm(f=>({...f,title:j.metadata.title,description:j.metadata.description,tags:(j.metadata.tags||[]).join(', '),privacyStatus:j.metadata.privacyStatus,publishAt:f.publishAt||toLocalInput(j.nextSlot||Date.now()+3600000)}));}
+  async function load(){try{setErr('');applyInfo(await ytFetch(`/youtube/preview/${video._id}`));}catch(e){setErr(e.message);}}
+  async function regenSeo(){if(!window.confirm('Write new SEO title, description and tags with AI? Your edits in this form will be replaced.'))return;setSeoBusy(true);setErr('');try{applyInfo(await ytFetch(`/youtube/seo/${video._id}`,{method:'POST'}));}catch(e){setErr(e.message);}finally{setSeoBusy(false);}}
+  useEffect(()=>{load();},[video._id]);
+  useEffect(()=>{const onMsg=e=>{if(e?.data?.type==='YOUTUBE_CONNECTED')load();};window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);},[video._id]);
+  async function upload(){
+    const when=form.when==='slot'?'at the profile\'s next publish slot':form.when==='custom'?`at ${new Date(form.publishAt).toLocaleString()}`:`now as ${form.privacyStatus}`;
+    if(!window.confirm(`Upload "${form.title}" to YouTube ${when}?`))return;
+    setBusy(true);setErr('');
+    try{const body={title:form.title,description:form.description,tags:form.tags.split(',').map(t=>t.trim()).filter(Boolean),privacyStatus:form.privacyStatus,...(form.when==='slot'?{schedule:'profile'}:form.when==='custom'?{publishAt:new Date(form.publishAt).toISOString()}:{})};
+      const j=await ytFetch(`/youtube/publish/${video._id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});setResult(j);onDone&&onDone();}
+    catch(e){setErr(e.message);}finally{setBusy(false);}
+  }
+  if(!info&&!err)return <p className="muted">Preparing SEO-optimized upload details… (the first time, the AI writes the title, description and tags for this video)</p>;
+  const rep=info?.seoReport,seo=info?.seo;
+  const yt=info?.youtube||{};const m=info?.metadata||{};const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const uploaded=result?.youtubeVideoId||video.youtubeVideoId;
+  const blockers=[info?.blockReason,...(info?.blockReason?[]:(info?.problems||[]))].filter(Boolean);
+  return <section className="ytPanel">
+    <div className="sectionHead"><div><small className="eyebrow">YOUTUBE UPLOAD</small><h4>{info?.profile?<>Profile "{info.profile.name}" → {yt.connected?<>channel <b>{yt.channelTitle||yt.channelId}</b></>:'no channel connected'}</>:'No profile linked'}</h4></div><div className="row">{info?.profile&&<button className="ghost" onClick={()=>onEditProfile(String(info.profile.id))}>Profile YouTube settings</button>}{info?.profile&&yt.configured&&<button className="ghost" onClick={()=>window.open(`${API}/youtube/auth/${info.profile.id}`,'youtube-auth','width=520,height=700')}>{yt.connected?'Reconnect channel':'Connect channel'}</button>}</div></div>
+    {err&&<div className="videoError">{err}</div>}
+    {uploaded&&<div className="banner info inline">On YouTube: <a href={`https://www.youtube.com/watch?v=${uploaded}`} target="_blank" rel="noreferrer">youtube.com/watch?v={uploaded}</a>{result?.publishAt?` · goes public ${new Date(result.publishAt).toLocaleString()}`:''}{(result?.warnings||[]).map((w,i)=><div key={i}>{w}</div>)}</div>}
+    {blockers.length>0&&<ul className="blockers">{blockers.map((b,i)=><li key={i}>{b}</li>)}</ul>}
+    {info&&rep&&<div className="seoBox">
+      <div className={`seoScore ${rep.score>=80?'good':rep.score>=50?'mid':'low'}`}><strong>{rep.score}</strong><small>SEO</small></div>
+      <div className="seoBody">
+        <div className="seoHead"><div><small className="eyebrow">SEO</small><b>{seo?.focusKeyword?<>Focus keyword: “{seo.focusKeyword}”</>:'No focus keyword yet'}</b><small className="muted">{seo?.source==='upload-seo'?`AI-optimized${seo.language?` in ${seo.language}`:''}${seo.generatedAt?` · ${new Date(seo.generatedAt).toLocaleString()}`:''}`:seo?.source?'From the generation-time SEO skill':'Basic metadata'}{info.isShort?' · Short':''}</small></div><button className="ghost" onClick={regenSeo} disabled={seoBusy||busy}>{seoBusy?'Optimizing…':'Regenerate SEO'}</button></div>
+        {seo?.error&&<div className="banner info inline">{seo.error}</div>}
+        <ul className="seoChecks">{rep.checks.map(c=><li key={c.id} className={c.ok?'ok':'no'} title={c.ok?'':c.tip}><span>{c.ok?'✓':'!'}</span>{c.label}{!c.ok&&<small> — {c.tip}</small>}</li>)}</ul>
+        {(seo?.searchQueries||[]).length>0&&<small className="muted">Targets searches: {seo.searchQueries.join(' · ')}</small>}
+        <small className="muted">The score here is for the AI-prepared details. Your edits below are kept as written; on upload, missing hashtags and the focus-keyword tag are added and limits are enforced.</small>
+      </div>
+    </div>}
+    {info&&<div className="formGrid">
+      <Field label={`Title (${form.title.length}/100)`} wide><input maxLength={100} value={form.title} onChange={e=>set('title',e.target.value)}/></Field>
+      <Field label="Description" wide><textarea rows="7" value={form.description} onChange={e=>set('description',e.target.value)}/></Field>
+      <Field label={`Tags (${form.tags.split(',').filter(t=>t.trim()).length})`} hint="Comma separated. The focus keyword is always added and the list is trimmed to YouTube's 500-character limit." wide><input value={form.tags} onChange={e=>set('tags',e.target.value)}/></Field>
+      <Field label="Visibility"><select value={form.privacyStatus} onChange={e=>set('privacyStatus',e.target.value)} disabled={form.when!=='now'}><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></Field>
+      <Field label="When" hint={form.when==='slot'?(info.nextSlot?`Next slot: ${new Date(info.nextSlot).toLocaleString()} (${info.settings.timezone})`:'Set a daily publish time on the profile first.'):form.when!=='now'?'Uploaded as private, then YouTube makes it public at this time.':''}><select value={form.when} onChange={e=>set('when',e.target.value)}><option value="now">Upload now</option><option value="slot" disabled={!info.nextSlot}>Profile's next publish slot</option><option value="custom">Pick date & time</option></select></Field>
+      {form.when==='custom'&&<Field label="Publish at (your local time)"><input type="datetime-local" value={form.publishAt} onChange={e=>set('publishAt',e.target.value)}/></Field>}
+    </div>}
+    {info&&<div className="kvGrid">
+      <div className="kv"><span>Category</span><b>{(YT_CATEGORIES.find(([id])=>id===m.categoryId)||[])[1]||m.categoryId}</b></div>
+      <div className="kv"><span>Audience</span><b>{m.selfDeclaredMadeForKids?'Made for kids':'Not made for kids'}</b></div>
+      <div className="kv"><span>AI disclosure</span><b>{m.containsSyntheticMedia?'Yes':'No'}</b></div>
+      <div className="kv"><span>Language</span><b>{m.defaultLanguage||'—'}</b></div>
+      <div className="kv"><span>Playlist</span><b>{m.playlistId||'—'}</b></div>
+      <div className="kv"><span>Tags</span><b title={(m.tags||[]).join(', ')}>{(m.tags||[]).length}</b></div>
+    </div>}
+    <div className="row"><button onClick={upload} disabled={busy||blockers.length>0||!form.title.trim()||(form.when==='custom'&&!form.publishAt)}>{busy?'Uploading…':uploaded?'Upload again':'Upload to YouTube'}</button></div>
+  </section>;
+}
+
 function App(){
  const [videos,setVideos]=useState([]),[job,setJob]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [ai,setAi]=useState(null),[aiBusy,setAiBusy]=useState(false),[aiMsg,setAiMsg]=useState(''),[aiSavedAt,setAiSavedAt]=useState(null);
  const [seriesList,setSeriesList]=useState([]),[selectedSeriesId,setSelectedSeriesId]=useState(''),[seriesForm,setSeriesForm]=useState({...DEFAULT_PROFILE_FORM});
  const [genSeriesId,setGenSeriesId]=useState('');
+ const [profileSection,setProfileSection]=useState('channel'),[ytForm,setYtForm]=useState({clientId:'',clientSecret:'',redirectUri:'',publishEnabled:false}),[ytMsg,setYtMsg]=useState(''),[ytBusy,setYtBusy]=useState(false);
  const [seriesLoaded,setSeriesLoaded]=useState(false),[aiError,setAiError]=useState('');
  const [channelUrl,setChannelUrl]=useState(''),[researchBusy,setResearchBusy]=useState(false),[researchMsg,setResearchMsg]=useState(''),[topicInput,setTopicInput]=useState(''),[pendingResearch,setPendingResearch]=useState(null);
  const [backendStatus,setBackendStatus]=useState('checking');
- const [tab,setTab]=useState('create'),[filter,setFilter]=useState('ALL'),[stats,setStats]=useState(null),[selected,setSelected]=useState(null),[settingsTab,setSettingsTab]=useState('providers'),[detailTab,setDetailTab]=useState('overview');
+ const [tab,setTab]=useState('create'),[filter,setFilter]=useState('ALL'),[profileFilter,setProfileFilter]=useState('ALL'),[stats,setStats]=useState(null),[selected,setSelected]=useState(null),[settingsTab,setSettingsTab]=useState('providers'),[detailTab,setDetailTab]=useState('overview');
  const profileDirtyRef=useRef(false);
  const [qaBusy,setQaBusy]=useState(false),[visualChecks,setVisualChecks]=useState({imagesMatch:false,subtitlesReadable:false,ageAppropriate:false});
 
@@ -317,13 +405,14 @@ function App(){
    // Merge into the existing saved profile so research-derived fields are kept.
    const channelProfile={...existing,version:1,channelName:f.name||'YouTube Channel',niche:f.niche,language:f.language||'English',
      audience:{...(existing.audience||{}),description:f.targetAge||'General audience',knowledgeLevel:existing.audience?.knowledgeLevel||'general'},
-     content:{...(existing.content||{}),primaryFormat:f.contentFormat||'Explainer',tone:f.tone||'Engaging and informative',hookStyle:f.hookStyle||'Curiosity',durationSec:Number(f.durationSec)||55,storytellingApproach:existing.content?.storytellingApproach||'Clear and niche-appropriate'},
-     visual:{...(existing.visual||{}),style:f.visualStyle||'Cinematic, high-quality visuals',aspectRatio:f.aspectRatio||'9:16',avoidTextInImages:true,subtitleSafeArea:true},
-     narration:{...(existing.narration||{}),voiceStyle:f.voiceStyle||'Natural, clear and engaging',language:f.language||'English'},
-     editorial:{...(existing.editorial||{}),safetyMode:kids?'kids-and-family':(existing.editorial?.safetyMode&&existing.editorial.safetyMode!=='kids-and-family'?existing.editorial.safetyMode:'standard'),factChecking:existing.editorial?.factChecking!==false},
+     content:{...(existing.content||{}),primaryFormat:f.contentFormat||'Explainer',tone:f.tone||'Engaging and informative',hookStyle:f.hookStyle||'Curiosity',durationSec:Number(f.durationSec)||55,storytellingApproach:existing.content?.storytellingApproach||'Clear and niche-appropriate',callToAction:f.callToAction.trim()},
+     visual:{...(existing.visual||{}),style:f.visualStyle||'Cinematic, high-quality visuals',aspectRatio:f.aspectRatio||'9:16',avoidTextInImages:true,subtitleSafeArea:true,subtitles:f.subtitles,subtitlePosition:f.subtitlePosition},
+     narration:{...(existing.narration||{}),voiceStyle:f.voiceStyle||'Natural, clear and engaging',language:f.language||'English',voices:f.voices||{}},
+     editorial:{...(existing.editorial||{}),avoidTopics:splitLines(f.avoidTopics),safetyMode:kids?'kids-and-family':(existing.editorial?.safetyMode&&existing.editorial.safetyMode!=='kids-and-family'?existing.editorial.safetyMode:'standard'),factChecking:existing.editorial?.factChecking!==false},
      source:existing.source==='channel-research'?'channel-research':'user-configured'};
    const payload={name:f.name.trim(),premise:f.premise.trim(),niche:f.niche,targetAge:f.targetAge,language:f.language,visualStyle:f.visualStyle,channelProfile,
-     ...(pendingResearch?{channelResearch:pendingResearch.research,contentStrategy:pendingResearch.research?.strategy,topicIdeas:pendingResearch.research?.strategy?.topicIdeas||[]}:{})};
+     rules:splitLines(f.rules),topicIdeas:splitLines(f.topicIdeas),uploadSettings:uploadPayload(f.upload),
+     ...(pendingResearch?{channelResearch:pendingResearch.research,contentStrategy:pendingResearch.research?.strategy}:{})};
    try{
      const j=selectedSeriesId?await apiJson(`/series/${selectedSeriesId}`,json('PUT',payload)):await apiJson('/series',json('POST',{...payload,active:seriesList.length===0}));
      setPendingResearch(null);profileDirtyRef.current=false;
@@ -347,13 +436,15 @@ function App(){
  async function duplicateProfile(){
    const current=seriesList.find(x=>String(x._id)===String(selectedSeriesId));if(!current||!confirmDiscard())return;
    const names=new Set(seriesList.map(x=>x.name));let name=`${current.name} (copy)`;for(let i=2;names.has(name);i++)name=`${current.name} (copy ${i})`;
-   try{const j=await apiJson('/series',json('POST',{name,premise:current.premise||name,niche:current.niche,targetAge:current.targetAge,language:current.language,visualStyle:current.visualStyle,channelProfile:current.channelProfile||{},rules:current.rules||[],topicIdeas:current.topicIdeas||[],contentStrategy:current.contentStrategy||null,active:false}),0);
+   try{const j=await apiJson('/series',json('POST',{name,premise:current.premise||name,niche:current.niche,targetAge:current.targetAge,language:current.language,visualStyle:current.visualStyle,channelProfile:current.channelProfile||{},rules:current.rules||[],topicIdeas:current.topicIdeas||[],contentStrategy:current.contentStrategy||null,uploadSettings:current.uploadSettings||{},active:false}),0);
      profileDirtyRef.current=false;await loadSeries();setSelectedSeriesId(String(j._id));setSeriesForm(formFromSeries(j));setPendingResearch(null);setResearchMsg(`Created "${name}". Edit it and save.`);
    }catch(e){setResearchMsg(`Duplicate failed: ${e.message}`)}
  }
  async function activateSeries(id=selectedSeriesId){if(!id)return;try{const j=await apiJson(`/series/${id}/activate`,{method:'POST'});setResearchMsg(`"${j.name}" is now the default profile.`);setGenSeriesId(String(j._id));await loadSeries();}catch(e){setResearchMsg(e.message)}}
- async function studyChannel(){if(!channelUrl.trim()){setResearchMsg('Enter a YouTube channel URL first.');return;}setResearchBusy(true);setResearchMsg('Studying channel: videos, audience signals, topics and content patterns…');try{const j=await apiJson('/series/research-channel',json('POST',{url:channelUrl.trim(),language:seriesForm.language||'English'}));setPendingResearch(j);setSeriesForm(f=>({...f,...Object.fromEntries(Object.entries(j.autofill||{}).filter(([k])=>k in DEFAULT_PROFILE_FORM))}));setResearchMsg('Channel studied. The profile fields were filled in — review them, then Save profile.');}catch(e){setResearchMsg(`Channel research failed: ${e.message}`)}finally{setResearchBusy(false)}}
- async function refresh(nextFilter=filter){try{const url=nextFilter&&nextFilter!=='ALL'?`/videos?status=${encodeURIComponent(nextFilter)}`:'/videos';const j=await apiJson(url);setVideos(Array.isArray(j)?j:[]);clearLoadError();}catch(e){setError(`Failed to load videos: ${e.message}`)}}
+ async function studyChannel(){if(!channelUrl.trim()){setResearchMsg('Enter a YouTube channel URL first.');return;}setResearchBusy(true);setResearchMsg('Studying channel: videos, audience signals, topics and content patterns…');try{const j=await apiJson('/series/research-channel',json('POST',{url:channelUrl.trim(),language:seriesForm.language||'English'}));setPendingResearch(j);setSeriesForm(f=>({...f,...Object.fromEntries(Object.entries(j.autofill||{}).filter(([k,v])=>k in DEFAULT_PROFILE_FORM&&typeof v!=='object')),...((j.research?.strategy?.topicIdeas||[]).length?{topicIdeas:joinList(j.research.strategy.topicIdeas)}:{})}));setResearchMsg('Channel studied. The profile fields were filled in — review them, then Save profile.');}catch(e){setResearchMsg(`Channel research failed: ${e.message}`)}finally{setResearchBusy(false)}}
+ const filterRef=useRef('ALL'),profileFilterRef=useRef('ALL');
+ function pickProfileFilter(id){setProfileFilter(id);profileFilterRef.current=id;refresh(filterRef.current,id);}
+ async function refresh(nextFilter=filterRef.current,nextProfile=profileFilterRef.current){try{const q=new URLSearchParams();if(nextFilter&&nextFilter!=='ALL')q.set('status',nextFilter);if(nextProfile&&nextProfile!=='ALL')q.set('seriesId',nextProfile);const url=`/videos${q.toString()?`?${q}`:''}`;const j=await apiJson(url);setVideos(Array.isArray(j)?j:[]);clearLoadError();}catch(e){setError(`Failed to load videos: ${e.message}`)}}
  async function refreshStats(){try{const j=await apiJson('/videos/stats',{},1);setStats(j);}catch{} }
  async function loadAI(){try{const j=await apiJson('/ai/settings');setAi(j);setAiError('');}catch(e){setAiError(e.message||'Backend unavailable');}}
  async function chooseAI(provider){setAiBusy(true);setAiMsg('');try{const j=await apiJson('/ai/settings',json('PUT',{provider}),0);setAi(j);setAiMsg(`Script AI changed to ${j.providers[provider].name}.`);}catch(e){setAiMsg(e.message)}finally{setAiBusy(false)}}
@@ -379,6 +470,7 @@ function App(){
  // Poll videos/stats, and keep retrying settings/profiles until they have loaded
  // (they used to load only once, so a backend restart left Settings stuck on "Loading").
  const aiRef=useRef(null),seriesLoadedRef=useRef(false);aiRef.current=ai;seriesLoadedRef.current=seriesLoaded;
+ filterRef.current=filter;profileFilterRef.current=profileFilter;
  useEffect(()=>{const timer=setInterval(()=>{checkBackend();refresh();refreshStats();if(!aiRef.current)loadAI();if(!seriesLoadedRef.current)loadSeries(true);},3000);return()=>clearInterval(timer)},[filter]);
  const prevBackend=useRef(backendStatus);
  useEffect(()=>{if(prevBackend.current!=='online'&&backendStatus==='online'&&prevBackend.current!=='checking'){loadAI();loadSeries();refresh();refreshStats();}prevBackend.current=backendStatus;},[backendStatus]);
@@ -409,9 +501,23 @@ function App(){
  const setM=(k,v)=>setAi(x=>({...x,media:{...x.media,[k]:v}}));
  const setVD=(k,v)=>setAi(x=>({...x,visualDirector:{...x.visualDirector,[k]:v}}));
  const setF=(k,v)=>setSeriesForm(f=>({...f,[k]:v}));
+ const setU=(k,v)=>setSeriesForm(f=>({...f,upload:{...f.upload,[k]:v}}));
+ // Per-profile YouTube connection (saved separately from the profile: the secret is write-only).
+ const ytAcc={...EMPTY_YT_ACCOUNT,...(editSeries?.youtubeAccount||{})};
+ const ytAccKey=`${selectedSeriesId}|${JSON.stringify(editSeries?.youtubeAccount||{})}`;
+ useEffect(()=>{setYtForm({clientId:ytAcc.clientId||'',clientSecret:'',redirectUri:ytAcc.redirectUri||ytAcc.defaultRedirectUri||'',publishEnabled:Boolean(ytAcc.publishEnabled)});},[ytAccKey]);
+ useEffect(()=>{setYtMsg('');},[selectedSeriesId]);
+ const ytDirty=Boolean(selectedSeriesId)&&(ytForm.clientId.trim()!==(ytAcc.clientId||'')||Boolean(ytForm.clientSecret.trim())||ytForm.redirectUri.trim()!==(ytAcc.redirectUri||'')||ytForm.publishEnabled!==Boolean(ytAcc.publishEnabled));
+ async function saveYtAccount(){if(!selectedSeriesId)return;setYtBusy(true);setYtMsg('');try{const j=await apiJson(`/youtube/account/${selectedSeriesId}`,json('PUT',{clientId:ytForm.clientId,clientSecret:ytForm.clientSecret,redirectUri:ytForm.redirectUri,publishEnabled:ytForm.publishEnabled}),0);await loadSeries();setYtMsg(j.connected?'YouTube settings saved.':j.configured?'Saved. Now click "Connect channel" and sign in with this channel\'s Google account.':'Saved.');}catch(e){setYtMsg(`Not saved: ${e.message}`)}finally{setYtBusy(false)}}
+ function connectYt(){if(!selectedSeriesId)return;setYtMsg('Finish signing in in the pop-up window…');window.open(`${API}/youtube/auth/${selectedSeriesId}`,'youtube-auth','width=520,height=700');}
+ async function disconnectYt(){if(!selectedSeriesId||!window.confirm(`Disconnect "${ytAcc.channelTitle||'this channel'}" from the profile? Uploads will stop until you connect again.`))return;setYtBusy(true);try{await apiJson(`/youtube/account/${selectedSeriesId}/disconnect`,{method:'POST'},0);await loadSeries();setYtMsg('Channel disconnected.');}catch(e){setYtMsg(`Disconnect failed: ${e.message}`)}finally{setYtBusy(false)}}
+ useEffect(()=>{const onMsg=e=>{if(e?.data?.type==='YOUTUBE_CONNECTED'){loadSeries();setYtMsg('YouTube channel connected.');}else if(e?.data?.type==='YOUTUBE_CONNECT_FAILED'){loadSeries();setYtMsg('YouTube connection failed — see the pop-up for details.');}};window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);},[]);
  const hindiTtsWarning=genProfile.language==='Hindi'&&ttsProvider==='groq';
- const rowHandlers={onOpen:id=>openVideo(id),onApprove:approve,onCancel:cancelVideo,onRetry:retryVideo,onDelete:deleteVideo};
- const statCard=(title,key,tone='')=><button className={`stat ${tone}`} onClick={()=>{if(key!=='RUNNING'){setFilter(key);refresh(key);}setTab('videos')}}><small>{title}</small><strong>{key==='ALL'?(counts.total||0):key==='RUNNING'?(stats?.activeJobs||0):(counts[key]||0)}</strong></button>;
+ const rowHandlers={onOpen:(id,t)=>openVideo(id,t),onApprove:approve,onCancel:cancelVideo,onRetry:retryVideo,onDelete:deleteVideo};
+ const byProfile=stats?.byProfile||{};
+ // Profile filter chips: every saved profile, plus archived/deleted profiles that still have videos.
+ const profileChips=[{id:'ALL',name:'All profiles',total:counts.total||0},...seriesList.map(x=>({id:String(x._id),name:x.name,total:byProfile[String(x._id)]?.total||0})),...Object.entries(byProfile).filter(([id])=>id!=='none'&&!seriesList.some(x=>String(x._id)===id)).map(([id,r])=>({id,name:r.name,total:r.total,archived:true})),...(byProfile.none?[{id:'none',name:'No profile',total:byProfile.none.total}]:[])];
+ const statCard=(title,key,tone='')=><button className={`stat ${tone}`} onClick={()=>{if(key!=='RUNNING'){setFilter(key);filterRef.current=key;refresh(key);}setTab('videos')}}><small>{title}</small><strong>{key==='ALL'?(counts.total||0):key==='RUNNING'?(stats?.activeJobs||0):(counts[key]||0)}</strong></button>;
  const page=NAV.find(n=>n[0]===tab)||NAV[0];
  const awaiting=counts.AWAITING_APPROVAL||0;
 
@@ -463,7 +569,7 @@ function App(){
         <div className="kv"><span>Narration</span><b>{ai?.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider}</b></div>
         <div className="kv"><span>Output</span><b>{ai?.video?.width||1080}×{ai?.video?.height||1920} · {ai?.video?.fps||30} fps</b></div>
       </Card>
-      <Card title="Recent videos" actions={<button className="ghost small" onClick={()=>{setFilter('ALL');setTab('videos')}}>All videos</button>}>
+      <Card title="Recent videos" actions={<button className="ghost small" onClick={()=>{setFilter('ALL');filterRef.current='ALL';pickProfileFilter('ALL');setTab('videos')}}>All videos</button>}>
         <div className="videos">{videos.length===0?<p className="muted">No videos yet.</p>:videos.slice(0,5).map(v=><VideoRow key={v._id} v={v} compact {...rowHandlers}/>)}</div>
       </Card>
      </div>
@@ -472,20 +578,23 @@ function App(){
    {tab==='videos'&&<div className="stack">
      <div className="statGrid wide">{statCard('Total','ALL')}{statCard('Active jobs','RUNNING')}{statCard('Awaiting approval','AWAITING_APPROVAL','accent')}{statCard('Published','PUBLISHED','good')}{statCard('Failed','FAILED','bad')}{statCard('Cancelled','CANCELLED')}</div>
      <Card actions={<button className="ghost" onClick={()=>{refresh();refreshStats()}}>Refresh</button>} title="All videos">
-       <div className="filterBar">{VIDEO_STATUSES.map(s=><button key={s} className={filter===s?'filterActive':'ghost'} onClick={()=>{setFilter(s);refresh(s)}}>{s==='ALL'?'All':label(s).toLowerCase()}</button>)}</div>
-       <div className="videos">{videos.length===0?<p className="muted">No videos match this status.</p>:videos.map(v=><VideoRow key={v._id} v={v} {...rowHandlers}/>)}</div>
+       <div className="profileFilter"><small className="eyebrow">PROFILE</small><div className="filterBar">{profileChips.map(p=><button key={p.id} className={profileFilter===p.id?'filterActive':'ghost'} onClick={()=>pickProfileFilter(p.id)} title={p.archived?'Archived or deleted profile':''}>{p.name}{p.archived?' (archived)':''} <span className="count">{p.total}</span></button>)}</div></div>
+       <div className="filterBar">{VIDEO_STATUSES.map(s=><button key={s} className={filter===s?'filterActive':'ghost'} onClick={()=>{setFilter(s);filterRef.current=s;refresh(s)}}>{s==='ALL'?'All':label(s).toLowerCase()}{profileFilter!=='ALL'&&s!=='ALL'&&byProfile[profileFilter]?.[s]?<span className="count">{byProfile[profileFilter][s]}</span>:null}</button>)}</div>
+       <div className="videos">{videos.length===0?<p className="muted">No videos match these filters.</p>:videos.map(v=><VideoRow key={v._id} v={v} {...rowHandlers}/>)}</div>
      </Card>
    </div>}
 
    {tab==='profiles'&&<div className="profilesGrid">
      <div className="profileList">
        <button className="newProfile" onClick={newProfile}>+ New profile</button>
-       {seriesList.map(s=><button key={s._id} className={`profileItem ${String(s._id)===String(selectedSeriesId)?'selected':''}`} onClick={()=>editProfile(String(s._id))}><b>{s.name}</b><small>{s.niche||'—'} · {formFromSeries(s).language} · {formFromSeries(s).durationSec}s</small>{String(s._id)===defaultId&&<em>Default</em>}</button>)}
+       {seriesList.map(s=><button key={s._id} className={`profileItem ${String(s._id)===String(selectedSeriesId)?'selected':''}`} onClick={()=>editProfile(String(s._id))}><b>{s.name}</b><small>{s.niche||'—'} · {formFromSeries(s).language} · {formFromSeries(s).durationSec}s · {byProfile[String(s._id)]?.total||0} videos</small>{String(s._id)===defaultId&&<em>Default</em>}</button>)}
        {extraActive&&<p className="muted small">Several profiles were marked default by an older version. The most recently updated one is used. Click “Set as default” on the one you want to fix this.</p>}
        {seriesList.length===0&&<p className="muted small">{seriesLoaded?'No profiles yet.':'Loading profiles…'}</p>}
      </div>
      <div className="stack">
        <Card eyebrow={selectedSeriesId?'EDIT PROFILE':'NEW PROFILE'} title={seriesForm.name||'Untitled profile'} actions={<>{profileDirty&&<span className="dirty">Unsaved changes</span>}{selectedSeriesId&&(String(selectedSeriesId)!==defaultId||extraActive)&&<button className="ghost" onClick={()=>activateSeries()}>Set as default</button>}{selectedSeriesId&&<button className="ghost" onClick={duplicateProfile}>Duplicate</button>}{selectedSeriesId&&<button className="danger ghost" onClick={deleteProfile}>Delete</button>}<button onClick={saveSeries} disabled={!profileDirty&&Boolean(selectedSeriesId)}>Save profile</button></>}>
+         <div className="profileTabs">{PROFILE_SECTIONS.map(([id,name])=><button key={id} className={profileSection===id?'active':''} onClick={()=>setProfileSection(id)}>{name}{id==='youtube'&&selectedSeriesId&&<span className={`miniDot ${ytAcc.connected?'ok':''}`}/>}</button>)}</div>
+         {profileSection==='channel'&&<>
          <div className="formSection"><h4>Identity</h4><div className="formGrid">
            <Field label="Channel name"><input value={seriesForm.name} onChange={e=>setF('name',e.target.value)} placeholder="e.g. Motivation Shorts Hindi"/></Field>
            <Field label="Niche"><input value={seriesForm.niche} onChange={e=>setF('niche',e.target.value)} placeholder="e.g. Motivation, technology, finance…"/></Field>
@@ -504,9 +613,70 @@ function App(){
            <Field label="Visual style"><input value={seriesForm.visualStyle} onChange={e=>setF('visualStyle',e.target.value)} placeholder="e.g. cinematic realism"/></Field>
            <Field label="Aspect ratio"><select value={seriesForm.aspectRatio} onChange={e=>setF('aspectRatio',e.target.value)}><option value="9:16">9:16 · Shorts / vertical</option><option value="16:9">16:9 · Standard YouTube</option><option value="1:1">1:1 · Square</option><option value="3:4">3:4 · Portrait feed</option></select></Field>
          </div></div>
+         </>}
+         {profileSection==='content'&&<>
+         <div className="formSection"><h4>Content rules</h4><p className="muted small">Sent to the script AI with every video made with this profile.</p><div className="formGrid">
+           <Field label="Call to action" hint="Spoken at the end of each video. Leave blank to let the AI decide." wide><input value={seriesForm.callToAction} onChange={e=>setF('callToAction',e.target.value)} placeholder="e.g. Follow for a new story every day"/></Field>
+           <Field label="Creator rules" hint="One rule per line."><textarea rows="3" value={seriesForm.rules} onChange={e=>setF('rules',e.target.value)} placeholder={'Always end with a moral\nNo slang'}/></Field>
+           <Field label="Never mention" hint="Topics or words to avoid, one per line."><textarea rows="3" value={seriesForm.avoidTopics} onChange={e=>setF('avoidTopics',e.target.value)} placeholder={'politics\ngraphic violence'}/></Field>
+           <Field label="Topic queue" hint={`Used in order when you generate without typing a topic. One per line.${splitLines(seriesForm.topicIdeas).length?` ${splitLines(seriesForm.topicIdeas).length} queued.`:''}`} wide><textarea rows="4" value={seriesForm.topicIdeas} onChange={e=>setF('topicIdeas',e.target.value)} placeholder={'The story of the honest woodcutter\nWhy Kalyug began'}/></Field>
+         </div></div>
+         </>}
+         {profileSection==='voice'&&<>
+         <div className="formSection"><h4>Captions & narration voice</h4><div className="formGrid four">
+           <Field label="Captions"><select value={seriesForm.subtitles} onChange={e=>setF('subtitles',e.target.value)}><option value="default">Default ({ai?.video?.subtitlesEnabled===false?'off':'on'})</option><option value="on">Always on</option><option value="off">Off</option></select></Field>
+           <Field label="Caption position"><select value={seriesForm.subtitlePosition} onChange={e=>setF('subtitlePosition',e.target.value)} disabled={seriesForm.subtitles==='off'}><option value="default">Default ({ai?.video?.subtitlePosition||'bottom'})</option><option value="bottom">Bottom</option><option value="center">Center</option><option value="top">Top</option></select></Field>
+           <Field label={`Voice (${ai?.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider})`} hint="Only for this profile. Each narration provider keeps its own choice." wide><select value={seriesForm.voices?.[ttsProvider]||''} onChange={e=>setF('voices',{...seriesForm.voices,[ttsProvider]:e.target.value})}><option value="">Settings default ({ttsVoice||'provider default'})</option>{[...new Set([seriesForm.voices?.[ttsProvider],...(VOICE_PRESETS[ttsProvider]||[])])].filter(Boolean).map(v=><option key={v} value={v}>{v}</option>)}</select></Field>
+         </div></div>
+         </>}
+         {profileSection==='youtube'&&<>
+         <div className="formSection"><h4>YouTube channel</h4>
+           {!selectedSeriesId?<p className="muted small">Save this profile first, then connect its YouTube channel.</p>:<>
+           <div className={`ytStatus ${ytAcc.connected?'ok':''}`}><span className="dot"/>{ytAcc.connected?<span>Connected to <b>{ytAcc.channelTitle||ytAcc.channelId}</b>{ytAcc.connectedAt?` · since ${new Date(ytAcc.connectedAt).toLocaleDateString()}`:''}{!ytAcc.publishEnabled&&' · uploads switched off'}</span>:ytAcc.configured?<span>OAuth client saved — not connected to a channel yet.</span>:<span>Not set up. Each profile uses its own Google OAuth client and channel.</span>}</div>
+           <details className="howTo"><summary>How to get these values</summary><ol><li>Google Cloud Console → create or pick a project → <b>APIs & Services → Library</b> → enable <b>YouTube Data API v3</b>.</li><li><b>OAuth consent screen</b>: External; add the Google account that owns this channel as a test user.</li><li><b>Credentials → Create credentials → OAuth client ID → Web application</b>. Under <b>Authorized redirect URIs</b> add exactly: <code>{ytForm.redirectUri||ytAcc.defaultRedirectUri}</code></li><li>Paste the Client ID and Client secret here, save, then click <b>Connect channel</b> and sign in with the channel's account.</li></ol><p className="muted small">The client secret and the channel login are stored encrypted on this computer and are never shown again or included in exports.</p></details>
+           <div className="formGrid">
+             <Field label="OAuth Client ID"><input value={ytForm.clientId} onChange={e=>setYtForm(f=>({...f,clientId:e.target.value}))} placeholder="1234-abc.apps.googleusercontent.com" autoComplete="off" spellCheck={false}/></Field>
+             <Field label="OAuth Client secret" hint={ytAcc.secretUnreadable?'⚠ The saved secret can no longer be read — enter it again.':ytAcc.hasClientSecret?'Saved. Leave blank to keep it.':''}><input type="password" value={ytForm.clientSecret} onChange={e=>setYtForm(f=>({...f,clientSecret:e.target.value}))} placeholder={ytAcc.hasClientSecret?'•••••••• saved':'GOCSPX-…'} autoComplete="new-password" spellCheck={false}/></Field>
+             <Field label="Redirect URI" hint="Must match the one in Google Cloud exactly." wide><input value={ytForm.redirectUri} onChange={e=>setYtForm(f=>({...f,redirectUri:e.target.value}))} placeholder={ytAcc.defaultRedirectUri} spellCheck={false}/></Field>
+           </div>
+           <Toggle checked={ytForm.publishEnabled} onChange={v=>setYtForm(f=>({...f,publishEnabled:v}))} label="Allow uploads from this profile" hint="Off = the Upload button is blocked for this profile's videos."/>
+           <div className="row wrap">
+             <button onClick={saveYtAccount} disabled={ytBusy||!ytDirty}>Save YouTube settings</button>
+             <button className="ghost" onClick={connectYt} disabled={ytBusy||ytDirty||!ytAcc.configured} title={ytDirty?'Save the YouTube settings first':!ytAcc.configured?'Add Client ID and secret first':''}>{ytAcc.connected?'Reconnect channel':'Connect channel'}</button>
+             {ytAcc.connected&&<button className="danger ghost" onClick={disconnectYt} disabled={ytBusy}>Disconnect</button>}
+           </div>
+           {ytAcc.lastError&&<div className="videoError">{ytAcc.lastError}</div>}
+           {ytMsg&&<div className="banner info inline">{ytMsg}</div>}
+           </>}
+         </div>
+         <div className="formSection"><h4>YouTube upload</h4><p className="muted small">Defaults for uploading videos made with this profile. Nothing is uploaded automatically — you upload each approved video from its details, and can change these there.</p>
+           <div className="formGrid four">
+             <Field label="Visibility"><select value={seriesForm.upload.privacyStatus} onChange={e=>setU('privacyStatus',e.target.value)}><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></Field>
+             <Field label="Category"><select value={seriesForm.upload.categoryId} onChange={e=>setU('categoryId',e.target.value)}>{YT_CATEGORIES.map(([id,n])=><option key={id} value={id}>{n}</option>)}</select></Field>
+             <Field label="Audience" hint="Required by YouTube (COPPA)."><select value={seriesForm.upload.madeForKids?'yes':'no'} onChange={e=>setU('madeForKids',e.target.value==='yes')}><option value="no">Not made for kids</option><option value="yes">Made for kids</option></select></Field>
+             <Field label="License"><select value={seriesForm.upload.license} onChange={e=>setU('license',e.target.value)}><option value="youtube">Standard YouTube</option><option value="creativeCommon">Creative Commons</option></select></Field>
+           </div>
+           <div className="formGrid">
+             <Field label="Title template" hint="{title} = generated title, {channel} = profile name. Max 100 characters."><input value={seriesForm.upload.titleTemplate} onChange={e=>setU('titleTemplate',e.target.value)} placeholder="{title} #shorts"/></Field>
+             <Field label="Playlist ID" hint="Optional. From the playlist URL (list=…)."><input value={seriesForm.upload.playlistId} onChange={e=>setU('playlistId',e.target.value)} placeholder="PLxxxxxxxxxxxx"/></Field>
+             <Field label="SEO keywords" hint="Comma separated. What this channel wants to rank for — the SEO AI uses them and they are added as tags." wide><input value={seriesForm.upload.seoKeywords} onChange={e=>setU('seoKeywords',e.target.value)} placeholder="hindi moral stories, kalyug kahani, motivational story"/></Field>
+             <Field label="Default tags" hint="Comma separated. Added before the AI's SEO tags."><input value={seriesForm.upload.tags} onChange={e=>setU('tags',e.target.value)} placeholder="motivation, hindi story"/></Field>
+             <Field label="Hashtags" hint="Added to the description."><input value={seriesForm.upload.hashtags} onChange={e=>setU('hashtags',e.target.value)} placeholder="#shorts #kalyug"/></Field>
+             <Field label="Description footer" hint="Added under every description: links, credits, social handles." wide><textarea rows="3" value={seriesForm.upload.descriptionFooter} onChange={e=>setU('descriptionFooter',e.target.value)} placeholder="New story every day. Subscribe!"/></Field>
+             <Field label="Daily publish time" hint="Optional. Lets you schedule an upload for the next slot."><input type="time" value={seriesForm.upload.scheduleTime} onChange={e=>setU('scheduleTime',e.target.value)}/></Field>
+             <Field label="Time zone"><select value={seriesForm.upload.timezone} onChange={e=>setU('timezone',e.target.value)}>{[...new Set([seriesForm.upload.timezone,...TIMEZONES])].map(z=><option key={z}>{z}</option>)}</select></Field>
+           </div>
+           <div className="toggleGrid">
+             <Toggle checked={seriesForm.upload.containsSyntheticMedia} onChange={v=>setU('containsSyntheticMedia',v)} label="Disclose AI-generated content" hint="YouTube's altered or synthetic content label."/>
+             <Toggle checked={seriesForm.upload.notifySubscribers} onChange={v=>setU('notifySubscribers',v)} label="Notify subscribers" hint="When the video becomes public."/>
+             <Toggle checked={seriesForm.upload.embeddable} onChange={v=>setU('embeddable',v)} label="Allow embedding"/>
+             <Toggle checked={seriesForm.upload.publicStatsViewable} onChange={v=>setU('publicStatsViewable',v)} label="Show like count"/>
+           </div>
+         </div>
+         </>}
          {researchMsg&&<div className="banner info inline">{researchMsg}</div>}
        </Card>
-       <Card eyebrow="CHANNEL RESEARCH" title="Learn from a YouTube channel">
+       {profileSection==='research'&&<Card eyebrow="CHANNEL RESEARCH" title="Learn from a YouTube channel">
          <p className="muted small">Paste a channel link. The agent studies its public signals and fills in this profile with an original strategy — it never copies videos, scripts or titles.</p>
          <div className="inlineForm"><input value={channelUrl} onChange={e=>setChannelUrl(e.target.value)} placeholder="https://www.youtube.com/@examplechannel"/><button onClick={studyChannel} disabled={researchBusy}>{researchBusy?'Studying…':'Study & fill profile'}</button></div>
          {(()=>{const r=pendingResearch?.research||editSeries?.channelResearch;const st=pendingResearch?.research?.strategy||editSeries?.contentStrategy;if(!r)return null;return <div className="researchResult">
@@ -515,7 +685,7 @@ function App(){
            {(editSeries?.topicIdeas||[]).length>0&&<div><small className="eyebrow">TOPIC IDEAS — click to use on Create</small><div className="topicIdeas"><div>{editSeries.topicIdeas.slice(0,12).map((x,i)=><button key={i} className="ghost chipBtn" onClick={()=>{setTopicInput(x);setGenSeriesId(String(editSeries._id));setTab('create')}}>{x}</button>)}</div></div></div>}
            <details><summary>Recent channel videos studied</summary><div className="researchVideos">{(r.raw?.videos||[]).slice(0,12).map((v,i)=><div key={i}><b>{v.title}</b>{v.views!=null&&<small>{Number(v.views).toLocaleString()} views</small>}</div>)}</div></details>
          </div>})()}
-       </Card>
+       </Card>}
      </div>
    </div>}
 
@@ -621,11 +791,11 @@ function App(){
   </main>
 
   {selected&&<div className="detailOverlay" onClick={()=>setSelected(null)}><div className="detailPanel" role="dialog" aria-label="Video details" onClick={e=>e.stopPropagation()}>
-    <div className="detailHead"><div><small className="eyebrow">VIDEO DETAILS</small><h2>{selected.title}</h2><div className="detailMeta"><StatusPill status={selected.status}/><span>Created {new Date(selected.createdAt).toLocaleString()}</span><span>Updated {new Date(selected.updatedAt).toLocaleString()}</span>{selected.qa?.score!=null&&<span>QA <b>{selected.qa.score}/100</b></span>}</div></div>
+    <div className="detailHead"><div><small className="eyebrow">VIDEO DETAILS</small><h2>{selected.title}</h2><div className="detailMeta"><StatusPill status={selected.status}/>{selected.profile&&<span className={`profileTag ${selected.profile.archived?'archived':''}`}>{selected.profile.name}</span>}<span>Created {new Date(selected.createdAt).toLocaleString()}</span><span>Updated {new Date(selected.updatedAt).toLocaleString()}</span>{selected.qa?.score!=null&&<span>QA <b>{selected.qa.score}/100</b></span>}</div></div>
       <div className="row">{selected.status==='AWAITING_APPROVAL'&&<button onClick={()=>approve(selected._id)} disabled={!selected.visualReview?.reviewedAt} title={selected.visualReview?.reviewedAt?'':'Complete the visual review first (QA & review tab)'}>Approve</button>}{['FAILED','CANCELLED'].includes(selected.status)&&<button onClick={()=>retryVideo(selected._id)}>Continue</button>}<button className="danger ghost" onClick={()=>deleteVideo(selected._id)}>Delete</button><button className="ghost" onClick={()=>setSelected(null)} aria-label="Close">✕</button></div>
     </div>
     {selected.error&&<div className="videoError">{selected.error}</div>}
-    <div className="detailTabs">{[['overview','Overview'],['qa','QA & review'],['scenes','Scenes'],['export','Logs & export'],['pipeline','Pipeline inspector']].map(([id,name])=><button key={id} className={detailTab===id?'active':''} onClick={()=>setDetailTab(id)}>{name}</button>)}</div>
+    <div className="detailTabs">{[['overview','Overview'],['qa','QA & review'],['scenes','Scenes'],['youtube','YouTube'],['export','Logs & export'],['pipeline','Pipeline inspector']].map(([id,name])=><button key={id} className={detailTab===id?'active':''} onClick={()=>setDetailTab(id)}>{name}</button>)}</div>
     {detailTab==='overview'&&<div className="overviewGrid">
       <div className="playerWrap">{videoFileUrl(selected)?<video src={videoFileUrl(selected)} controls preload="metadata"/>:<div className="noVideo">No rendered video yet</div>}{videoFileUrl(selected)&&<a className="btnLink" href={videoFileUrl(selected)} target="_blank" rel="noreferrer">Open in new tab</a>}</div>
       <div className="stack">
@@ -634,6 +804,7 @@ function App(){
     </div>}
     {detailTab==='qa'&&<section className="qaPanel"><div className="sectionHead"><div><small className="eyebrow">RETENTION & QUALITY ENGINE</small><h4>Video QA Report</h4></div><button className="ghost" disabled={qaBusy||!selected.renderPath} onClick={rerunQA}>{qaBusy?'Checking…':'Run QA again'}</button></div>{Boolean(selected.qa && Array.isArray(selected.qa.checks))?<><div className="qaSummary"><strong>{selected.qa.score}/100</strong><span>{selected.qa.pass?'Technical checks passed':'Technical checks failed'}</span><small>{selected.qa.summary?.passed||0} passed · {selected.qa.summary?.warnings||0} warnings · {selected.qa.summary?.failures||0} failures{Number.isFinite(Number(selected.qa.retention?.score))?` · Retention ${selected.qa.retention.score}/100`:''}</small></div><div className="qaChecks">{(selected.qa.checks||[]).map((c,i)=><div className="qaCheck" key={`${c.name}-${i}`}><b className={`qaBadge ${String(c.status||'').toLowerCase()}`}>{c.status}</b><div><strong>{c.name}</strong><span>{c.message}</span>{c.audioIntelligence&&<AudioDetails data={c.audioIntelligence}/>}</div></div>)}</div></>:<p className="muted">No QA report yet. Run QA to inspect the rendered MP4.</p>}<div className="manualReview"><h4>Human visual review</h4><p className="muted">Automated checks cannot reliably judge story-image relevance or audience suitability. Watch the video before approving it.</p><label><input type="checkbox" checked={visualChecks.imagesMatch} onChange={e=>setVisualChecks(v=>({...v,imagesMatch:e.target.checked}))}/> Every image matches its narration and characters remain consistent</label><label><input type="checkbox" checked={visualChecks.subtitlesReadable} onChange={e=>setVisualChecks(v=>({...v,subtitlesReadable:e.target.checked}))}/> Subtitles are readable and do not hide important action</label><label><input type="checkbox" checked={visualChecks.ageAppropriate} onChange={e=>setVisualChecks(v=>({...v,ageAppropriate:e.target.checked}))}/> Story and visuals are suitable for the channel's intended audience</label><div className="row"><button onClick={saveVisualReview} disabled={!Object.values(visualChecks).every(Boolean)||selected.status!=='AWAITING_APPROVAL'}>Save visual review</button>{selected.visualReview?.reviewedAt&&<small className="muted">Reviewed {new Date(selected.visualReview.reviewedAt).toLocaleString()}</small>}</div></div></section>}
     {detailTab==='scenes'&&<section className="sceneReview"><div className="sectionHead"><div><small className="eyebrow">SELECTIVE REGENERATION</small><h4>Scene assets</h4></div><button className="ghost" disabled={qaBusy||!selected.renderPath} onClick={rerenderOnly}>Re-render video only</button></div><p className="muted">Regenerate a single image without regenerating narration or the other scene images.</p><div className="sceneReviewGrid">{(selected.storyId?.scenes||[]).map((scene,i)=>{const n=Number(scene.sceneNumber||i+1);const asset=(selected.sceneAssets||[]).find(x=>Number(x.sceneNumber)===n);return <article className="sceneReviewCard" key={n}>{asset?.fileName?<img src={`${STORAGE}/storage/videos/${selected._id}/scenes/${encodeURIComponent(asset.fileName)}`} alt={`Scene ${n}`} loading="lazy"/>:<div className="noImage">No image</div>}<div><b>Scene {n}{scene.durationSec?` · ${Number(scene.durationSec).toFixed(1)} s`:''}</b><p>{scene.narration||scene.visualPrompt||'No scene description available.'}</p>{(()=>{const meaning=selected.storyId?.pipelineData?.visualDirectorPlan?.scenes?.find(x=>Number(x.sceneNumber)===n)?.narrationMeaning;return meaning?<p className="sceneMeaning">Image should show: {meaning}</p>:null})()}{asset?.prompt&&<details className="scenePrompt"><summary>{asset.reused?'Image prompt (image reused from an earlier run)':'Image prompt sent to the model'}</summary><p>{asset.prompt}</p></details>}<button className="ghost" disabled={qaBusy||!['AWAITING_APPROVAL','APPROVED','FAILED','CANCELLED'].includes(selected.status)} onClick={()=>regenerateScene(n)}>Regenerate image</button></div></article>})}</div></section>}
+    {detailTab==='youtube'&&<YouTubePanel key={selected._id} video={selected} onDone={refreshSelected} onEditProfile={id=>{setSelected(null);editProfile(id);setProfileSection('youtube');}}/>}
     {detailTab==='export'&&<DiagnosticsExport selected={selected}/>}
     {detailTab==='pipeline'&&<><p className="muted">Complete step-by-step execution trace. Every stage keeps its INPUT, OUTPUT, META, timing and error data.</p><PipelineTrace job={selected.jobs?.[0]}/></>}
   </div></div>}

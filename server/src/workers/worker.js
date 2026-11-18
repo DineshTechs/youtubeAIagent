@@ -109,6 +109,7 @@ async function processJob(job){
       if(!story) throw new Error('The failed video has no associated story.');
       series=await Series.findById(story.seriesId);
       if(!series) throw new Error('The failed video story belongs to a missing series.');
+      if(!video.seriesId) await Video.updateOne({_id:video._id},{$set:{seriesId:series._id}});
       channelProfile=buildChannelProfile(series,{...(job.payload||{}),channelProfile:job.payload?.channelProfile||series.channelProfile});
       characters=await Character.find({seriesId:series._id,active:true});
       await updateJob(jobId,5,'RESUMING','Continuing failed video from saved state.');
@@ -160,7 +161,7 @@ async function processJob(job){
       await updateJob(jobId,22,'SCRIPT_QA',`Script QA ${qa.pass?'passed':'failed'} (${qa.score ?? 'n/a'}). YouTube Skills: ${youtubeOptimization.successCount}/${youtubeOptimization.totalSkills} completed, ${youtubeOptimization.skippedCount} skipped, ${youtubeOptimization.failedCount} failed.`);
       if(!qa.pass) throw new Error(`Script QA failed: ${(qa.notes||[]).join('; ')}`);
       story=await Story.create({...storyData,seriesId:series._id,episodeNumber,qa,youtubeOptimization,channelProfile});
-      video=await Video.create({storyId:story._id,title:story.title,status:'ASSETS_GENERATING',qa,statusHistory:[{status:'ASSETS_GENERATING',message:'Video created; media generation started.',attempt:0,source:'VIDEO'}]});
+      video=await Video.create({storyId:story._id,seriesId:series._id,title:story.title,status:'ASSETS_GENERATING',qa,statusHistory:[{status:'ASSETS_GENERATING',message:'Video created; media generation started.',attempt:0,source:'VIDEO'}]});
       await GenerationJob.findByIdAndUpdate(jobId,{$set:{videoId:video._id}});
     }
 
@@ -483,8 +484,11 @@ async function processJob(job){
     await Video.findByIdAndUpdate(video._id,{$set:{media:{scenes:sceneFiles,audio,subtitles:srt}}});
     await setVideoStatus(video._id,'VIDEO_RENDERING','Rendering video.','clear',attempt);
     await updateJob(jobId,65,'VIDEO_RENDERING','Rendering vertical MP4 with FFmpeg.');
+    // Profile caption settings override the global defaults in Settings → Output.
+    const profileVisual=(series?buildChannelProfile(series):channelProfile)?.visual||{};
+    const profileSubtitles={enabled:profileVisual.subtitles==='on'?true:profileVisual.subtitles==='off'?false:(aiMedia.video?.subtitlesEnabled??true),position:['bottom','center','top'].includes(profileVisual.subtitlePosition)?profileVisual.subtitlePosition:(aiMedia.video?.subtitlePosition||'bottom')};
     let lastProgress=-1;
-    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:aiMedia.video?.subtitlesEnabled??true,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',subtitlePosition:aiMedia.video?.subtitlePosition||'bottom',subtitleOffsetPct:aiMedia.video?.subtitleOffsetPct??7,shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
+    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:profileSubtitles.enabled,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',subtitlePosition:profileSubtitles.position,subtitleOffsetPct:aiMedia.video?.subtitleOffsetPct??7,shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
       const progress=65+Math.round(p*.25);
       if(progress===lastProgress)return;
       lastProgress=progress;

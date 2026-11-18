@@ -12,10 +12,7 @@ echo.
 rem Safety: secrets must never be committed.
 git check-ignore -q server/.env || (echo [ERROR] server\.env is NOT ignored by .gitignore. Nothing was pushed. & pause & exit /b 1)
 
-echo Running server tests before pushing...
-call npm test --workspace server >"%TEMP%\yta-tests.log" 2>&1
-if errorlevel 1 (echo [ERROR] Tests failed - nothing was pushed. Details: %TEMP%\yta-tests.log & pause & exit /b 1)
-echo Tests passed.
+rem Tests are not run here - use run-tests.bat separately.
 echo.
 
 git add -A

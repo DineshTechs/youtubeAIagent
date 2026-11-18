@@ -6,6 +6,10 @@ export function normalizeDuration(value,fallback=DEFAULT_DURATION_SEC){const n=N
 export function normalizeHookStyle(value,fallback='Curiosity'){const v=String(value||'').trim();return HOOK_STYLES.find(h=>h.toLowerCase()===v.toLowerCase())||fallback;}
 const asList=value=>Array.isArray(value)?value.map(x=>String(x||'').trim()).filter(Boolean):[];
 
+export const SUBTITLE_MODES=['default','on','off'];
+export const SUBTITLE_POSITIONS=['default','bottom','center','top'];
+const asVoices=v=>v&&typeof v==='object'?Object.fromEntries(Object.entries(v).map(([k,x])=>[String(k),String(x||'').trim()]).filter(([,x])=>x)):{};
+
 export function buildChannelProfile(series={},overrides={}){
   const base=series?.channelProfile&&typeof series.channelProfile==='object'?series.channelProfile:{};
   const override=overrides.channelProfile&&typeof overrides.channelProfile==='object'?overrides.channelProfile:{};
@@ -35,10 +39,20 @@ export function buildChannelProfile(series={},overrides={}){
     audience:{description:audienceDescription,ageRange:asText(overrides.ageRange,asText(audienceSaved.ageRange,'')),knowledgeLevel:asText(audienceSaved.knowledgeLevel,'general'),interests:asList(audienceSaved.interests)},
     language,
     content:{primaryFormat:format,formats:asList(contentSaved.formats).length?asList(contentSaved.formats):[format],tone:asText(overrides.tone,asText(contentSaved.tone,asText(saved.tone,'Engaging and audience-appropriate'))),storytellingApproach:asText(contentSaved.storytellingApproach,'Clear, coherent and niche-appropriate'),pacing:asText(contentSaved.pacing,'Dynamic but easy to follow'),hookStyle:normalizeHookStyle(asText(overrides.hookStyle,asText(contentSaved.hookStyle,'Curiosity'))),durationSec:normalizeDuration(overrides.durationSec??contentSaved.durationSec),callToAction:asText(contentSaved.callToAction,'Natural and relevant to the channel')},
-    visual:{style:visualStyle,aspectRatio,colorPalette:asText(visualSaved.colorPalette,'Consistent with the channel identity'),realism:asText(visualSaved.realism,'Match the selected visual style'),subtitleSafeArea:visualSaved.subtitleSafeArea!==false,avoidTextInImages:visualSaved.avoidTextInImages!==false},
-    narration:{voiceStyle:asText(overrides.voiceStyle,asText(narrationSaved.voiceStyle,'Natural, clear and engaging')),audience:audienceDescription,pace:asText(narrationSaved.pace,'Natural'),energy:asText(narrationSaved.energy,'Confident and engaging'),language},
-    editorial:{safetyMode,factChecking:saved.editorial?.factChecking!==false,originalityRules:asList(saved.editorial?.originalityRules).length?asList(saved.editorial.originalityRules):['Create original scripts and visuals','Do not copy source-channel scripts, titles or distinctive creative work','Avoid unsupported factual claims']},
+    visual:{style:visualStyle,aspectRatio,colorPalette:asText(visualSaved.colorPalette,'Consistent with the channel identity'),realism:asText(visualSaved.realism,'Match the selected visual style'),subtitleSafeArea:visualSaved.subtitleSafeArea!==false,avoidTextInImages:visualSaved.avoidTextInImages!==false,subtitles:SUBTITLE_MODES.includes(visualSaved.subtitles)?visualSaved.subtitles:'default',subtitlePosition:SUBTITLE_POSITIONS.includes(visualSaved.subtitlePosition)?visualSaved.subtitlePosition:'default'},
+    narration:{voiceStyle:asText(overrides.voiceStyle,asText(narrationSaved.voiceStyle,'Natural, clear and engaging')),audience:audienceDescription,pace:asText(narrationSaved.pace,'Natural'),energy:asText(narrationSaved.energy,'Confident and engaging'),language,voices:asVoices(narrationSaved.voices)},
+    editorial:{safetyMode,factChecking:saved.editorial?.factChecking!==false,avoidTopics:asList(saved.editorial?.avoidTopics),originalityRules:asList(saved.editorial?.originalityRules).length?asList(saved.editorial.originalityRules):['Create original scripts and visuals','Do not copy source-channel scripts, titles or distinctive creative work','Avoid unsupported factual claims']},
     source:saved.source||'user-configured-or-legacy-series'
   };
 }
 export function channelProfileSummary(profile){return {niche:profile.niche,audience:profile.audience.description,language:profile.language,format:profile.content.primaryFormat,tone:profile.content.tone,visualStyle:profile.visual.style,aspectRatio:profile.visual.aspectRatio,voiceStyle:profile.narration.voiceStyle,safetyMode:profile.editorial.safetyMode};}
+
+// Explicit, non-JSON instructions for profile rules the script model must follow.
+export function profileDirectives(profile={}){
+  const out=[];
+  const cta=String(profile?.content?.callToAction||'').trim();
+  if(cta&&cta!=='Natural and relevant to the channel')out.push(`End the final scene with this call to action, phrased naturally in the video language: ${cta}.`);
+  const avoid=Array.isArray(profile?.editorial?.avoidTopics)?profile.editorial.avoidTopics.filter(Boolean):[];
+  if(avoid.length)out.push(`Never cover, mention or show these topics/words: ${avoid.join('; ')}.`);
+  return out.join(' ');
+}

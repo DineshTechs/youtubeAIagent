@@ -1,7 +1,0 @@
-V1.6.3 Copy & Export Center
-Added client-side Copy & Export Center to video details.
-Includes copy generation logs, QA report, QA JSON, scene timeline, narration.
-Downloads logs TXT, QA TXT, combined diagnostics TXT, structured diagnostics JSON.
-Sensitive key-like fields are redacted from structured diagnostics.
-No database migration required.
-Note: ZIP export not included. Frontend production build could not be verified in this environment due unavailable executable Vite binary in uploaded node_modules; run npm install then npm run build --workspace client locally.

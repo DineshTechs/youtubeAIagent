@@ -167,12 +167,16 @@ export async function generateImage(prompt, outFile, requestedProvider = null, o
   return outFile;
 }
 
-async function groqSpeechChunk(text, outFile) {
+// A channel profile may pick its own voice per narration provider (blank = Settings default).
+function profileVoice(profile, provider) { return String(profile?.voices?.[provider] || '').trim(); }
+
+async function groqSpeechChunk(text, outFile, profile = {}) {
   if (!env.groqKey) throw new Error('GROQ_API_KEY is not configured for TTS.');
   const settings = await getMediaSettings();
   const model = settings.ttsModel || env.groqTtsModel || 'canopylabs/orpheus-v1-english';
   const voices = ['autumn','diana','hannah','austin','daniel','troy'];
-  const voice = voices.includes(settings.ttsVoice) ? settings.ttsVoice : 'hannah';
+  const wanted = profileVoice(profile, 'groq') || settings.ttsVoice;
+  const voice = voices.includes(wanted) ? wanted : 'hannah';
   const r = await fetch('https://api.groq.com/openai/v1/audio/speech', { method: 'POST', headers: { Authorization: `Bearer ${env.groqKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model, voice, input: text.slice(0, 200), response_format: 'wav' }) });
   if (!r.ok) throw new Error(`Groq audio/speech failed (${r.status}): ${(await r.text()).slice(0, 800)}`);
   await fs.writeFile(outFile, Buffer.from(await r.arrayBuffer()));
@@ -194,12 +198,12 @@ async function concatWav(files, outFile) {
   await fs.unlink(listFile).catch(() => {});
 }
 
-async function generateGroqSpeech(text, outFile) {
+async function generateGroqSpeech(text, outFile, profile = {}) {
   const chunks = splitForOrpheus(text);
   const tempDir = path.join(path.dirname(outFile), 'tts-chunks');
   await fs.mkdir(tempDir, { recursive: true });
   const files = [];
-  for (let i = 0; i < chunks.length; i++) { const file = path.join(tempDir, `chunk-${String(i+1).padStart(3,'0')}.wav`); await groqSpeechChunk(chunks[i], file); files.push(file); }
+  for (let i = 0; i < chunks.length; i++) { const file = path.join(tempDir, `chunk-${String(i+1).padStart(3,'0')}.wav`); await groqSpeechChunk(chunks[i], file, profile); files.push(file); }
   const wavOut = outFile.replace(/\.mp3$/i, '.wav');
   await concatWav(files, wavOut);
   await new Promise((resolve, reject) => { const child = spawn(ffmpegPath, ['-y','-i',wavOut,'-codec:a','libmp3lame','-q:a','4',outFile], {stdio:'ignore'}); child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(new Error(`FFmpeg MP3 conversion failed with code ${code}`))); });
@@ -211,7 +215,7 @@ async function generateOpenAISpeech(text, outFile, language = 'English', profile
   if (!env.openaiKey) throw new Error('OPENAI_API_KEY is not configured for TTS.');
   const settings = await getMediaSettings();
   const model=settings.ttsModel || env.openaiTtsModel;
-  const body={model,voice:settings.ttsVoice||env.openaiTtsVoice,input:text,response_format:'mp3'};
+  const body={model,voice:profileVoice(profile,'openai')||settings.ttsVoice||env.openaiTtsVoice,input:text,response_format:'mp3'};
   // Free-form delivery instructions are supported by gpt-4o-mini-tts, not all
   // legacy TTS models. Keep older configured models compatible.
   if(String(model||'').includes('gpt-4o-mini-tts')){
@@ -295,7 +299,7 @@ async function generateGeminiSpeech(text, outFile, language = 'English', profile
   if (!env.geminiKey) throw new Error('GEMINI_API_KEY is not configured for Gemini TTS.');
   const settings = await getMediaSettings();
   const model = settings.ttsModel || env.geminiTtsModel || 'gemini-3.8-flash-tts';
-  const voice = settings.ttsVoice || env.geminiTtsVoice || 'Kore';
+  const voice = profileVoice(profile, 'gemini') || settings.ttsVoice || env.geminiTtsVoice || 'Kore';
   const isHindi = String(language || '').toLowerCase().startsWith('hi') || String(language || '').toLowerCase().includes('hindi');
   const style = `Speak in ${language}. Use this voice style: ${profile.voiceStyle||'natural, clear and engaging'}. Pace: ${profile.pace||'natural'}. Energy: ${profile.energy||'confident and engaging'}. Use natural pronunciation for the supplied language. Read the supplied transcript verbatim; do not translate, paraphrase, add or omit words.`;
 
@@ -368,7 +372,7 @@ export async function generateSpeech(text, outFile, language = 'English', profil
   // The selected TTS provider is authoritative. Never silently switch providers
   // (for example, Groq -> OpenAI) because that makes the UI selection misleading.
   if (ttsProvider === 'groq') {
-    return generateGroqSpeech(text, outFile);
+    return generateGroqSpeech(text, outFile, profile);
   }
   if (ttsProvider === 'openai') return generateOpenAISpeech(text, outFile, language, profile);
   if (ttsProvider === 'gemini') return generateGeminiSpeech(text, outFile, language, profile);
