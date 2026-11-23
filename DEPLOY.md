@@ -102,7 +102,7 @@ shows `PersistentApp … port: 3000, command: "npm start"`). Then:
 - **Port:** the server must listen on the port the panel proxies to. Set the environment
   variable `PORT=3000` (or the port your panel shows), or put `PORT=3000` in `server/.env`.
 - **Working directory:** the project folder that contains `package.json`, `server/` and `client/`.
-- Build the dashboard first (`npm run build`, on your PC before uploading, or once on the server).
+- The dashboard (`client/dist`, not in git) is built automatically by `npm start` when it is missing or out of date — run `npm install` in the project folder first.
 - Put the environment variables from step 5 in the panel, or in `server/.env` (never inside a folder the
   web server shows directly). Afterwards open `https://aividman.store/server/.env` — it must **not** download anything.
 

@@ -34,6 +34,9 @@ if(existsSync(path.join(clientDist,'index.html'))){
   app.get(/^\/app\/.*/,(_req,res)=>{res.setHeader('Cache-Control','no-cache');res.setHeader('X-Robots-Tag','noindex');res.sendFile(path.join(clientDist,'index.html'));});
 }else if(!security.config.production){
   app.get(/^\/app\/.*/,(req,res)=>res.redirect(`http://${req.hostname}:5173/`));
+}else{
+  console.error(`[start] Dashboard not built: ${clientDist} is missing. Run "npm run build" in the project folder (npm start does this automatically).`);
+  app.get(/^\/app\/.*/,(_req,res)=>res.status(503).type('html').send('<!doctype html><meta charset="utf-8"><title>Dashboard not built</title><body style="font-family:system-ui;padding:40px;max-width:640px"><h2>The dashboard is not built on this server yet</h2><p>In the project folder run <code>npm install</code> and then <code>npm run build</code> (or start the app with <code>npm start</code>, which builds it automatically), then restart the app.</p><p><a href="/">Back to the home page</a></p></body>'));
 }
 app.use('/api',(req,res)=>res.status(404).json({error:`Not found (404): ${req.method} /api${req.path}`}));
 app.use((err,_req,res,_next)=>{console.error(err);const status=Number(err.status||err.statusCode)||500;res.status(status).json({error:err.message||'Internal server error'});});
