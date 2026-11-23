@@ -93,6 +93,19 @@ Then **Run NPM Install**, and **Restart**. Open your domain: you should see the 
 `ffmpeg` comes with the app (`ffmpeg-static`). If renders fail with "FFmpeg executable was not
 found" or "permission denied", ask MilesWeb whether ffmpeg is installed and set `FFMPEG_PATH`.
 
+## If your panel asks for a "command" and a "port" (no startup file)
+
+Some MilesWeb plans run Node apps with a start **command** behind a proxy **port** (the log
+shows `PersistentApp … port: 3000, command: "npm start"`). Then:
+
+- **Command:** `npm start` (runs only the server — it serves the home page, the built dashboard and the API).
+- **Port:** the server must listen on the port the panel proxies to. Set the environment
+  variable `PORT=3000` (or the port your panel shows), or put `PORT=3000` in `server/.env`.
+- **Working directory:** the project folder that contains `package.json`, `server/` and `client/`.
+- Build the dashboard first (`npm run build`, on your PC before uploading, or once on the server).
+- Put the environment variables from step 5 in the panel, or in `server/.env` (never inside a folder the
+  web server shows directly). Afterwards open `https://aividman.store/server/.env` — it must **not** download anything.
+
 ## 6. HTTPS
 
 cPanel → **SSL/TLS Status** → run AutoSSL for the domain (free certificate).

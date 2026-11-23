@@ -33,7 +33,7 @@ rem Open the dashboard once the dev servers have had a moment to start.
 start "" /b cmd /c "ping -n 9 127.0.0.1 >nul & start http://localhost:5173"
 rem Runs without auto-reload: a reload (on any file change) would kill a video
 rem that is being made. After updating the code, restart with stop-app/start-app.
-call npm run start
+call npm run local
 echo.
 echo The app has stopped.
 pause
