@@ -1,5 +1,5 @@
 import {Router} from 'express';
-import {listVideos,getVideo,approveVideo,retryVideo,cancelVideo,deleteVideo,getVideoStats,regenerateScene,rerenderVideo,markVisualReview,rerunVideoQa} from '../controllers/videoController.js';
+import {listVideos,getVideo,approveVideo,retryVideo,cancelVideo,deleteVideo,getVideoStats,regenerateScene,rerenderVideo,markVisualReview,rerunVideoQa,editScene,confirmRender,rebuildImages} from '../controllers/videoController.js';
 const r=Router();
 r.get('/stats',getVideoStats);
 r.get('/',listVideos);
@@ -9,6 +9,9 @@ r.post('/:id/qa',rerunVideoQa);
 r.post('/:id/visual-review',markVisualReview);
 r.post('/:id/rerender',rerenderVideo);
 r.post('/:id/scenes/:sceneNumber/regenerate',regenerateScene);
+r.post('/:id/scenes/:sceneNumber/edit',editScene);
+r.post('/:id/render',confirmRender);
+r.post('/:id/rebuild-images',rebuildImages);
 r.post('/:id/retry',retryVideo);
 r.post('/:id/cancel',cancelVideo);
 r.delete('/:id',deleteVideo);

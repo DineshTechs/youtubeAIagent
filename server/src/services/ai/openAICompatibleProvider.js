@@ -1,10 +1,12 @@
 import {profileDirectives} from '../channelProfile.js';
 import {STORY_VISUAL_PROMPT_RULE} from '../../utils/visualPlan.js';
+import {aiProgress} from './aiEvents.js';
 import { env } from '../../config/env.js';
 
 function parseJson(text, label) {
   if (!text) throw new Error(`${label} returned an empty response.`);
-  const cleaned = String(text).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  // Reasoning models (Nemotron, DeepSeek R1, Qwen) may put <think>…</think> before the JSON.
+  const cleaned = String(text).replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
   try { return JSON.parse(cleaned); } catch {}
 
   // Recover the first complete JSON object/array when a model adds a short prefix/suffix.
@@ -72,17 +74,28 @@ async function callGroq({ baseUrl, apiKey, model, prompt, label, jsonMode = true
   // out of the visible JSON response and reduces malformed/empty JSON failures.
   if (jsonMode) {
     body.response_format = { type: 'json_object' };
-    body.reasoning_format = 'hidden';
-    body.reasoning_effort = 'low';
+    // Groq-only options; other providers (Mistral, GitHub, Cohere…) reject unknown fields.
+    if (/groq\.com/i.test(baseUrl)) { body.reasoning_format = 'hidden'; body.reasoning_effort = 'low'; }
   }
 
+  aiProgress(`Waiting for ${label} (${model}).`, { label });
   const r = await fetch(`${baseUrl}/chat/completions`, {
+    signal: AbortSignal.timeout(Number(process.env.TEXT_REQUEST_TIMEOUT_MS || 180000)),
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`${label} request failed (${r.status}): ${text.slice(0, 1200)}`);
+  if (!r.ok) {
+    // A retired or unknown model: say so plainly (no point retrying the same model).
+    if ((r.status === 404 || r.status === 410 || r.status === 400) && /model/i.test(text) && /(not (?:be )?found|no longer|end of life|does not exist|deprecated|not available|invalid model|unknown model|decommission)/i.test(text)) {
+      const detail = (() => { try { const j = JSON.parse(text); return j.detail || j.error?.message || j.message || text; } catch { return text; } })();
+      const e = new Error(`The model "${model}" cannot be used any more (${String(detail).slice(0, 220)}). Go to Settings → AI providers → API keys for script providers, click "Load models", pick another model and Save.`);
+      e.modelUnavailable = true; e.status = r.status;
+      throw e;
+    }
+    throw new Error(`${label} request failed (${r.status}): ${text.slice(0, 1200)}`);
+  }
   let data;
   try { data = JSON.parse(text); } catch { throw new Error(`${label} returned an invalid API response.`); }
   const content = data?.choices?.[0]?.message?.content || '';
@@ -105,6 +118,7 @@ async function requestJson({ baseUrl, apiKey, model, prompt, label, temperature 
   // provider's suggested delay and retry the same compact request once.
   if (isRateLimitError(firstError)) {
     const waitMs = retryAfterMsFromError(firstError, 6500);
+    aiProgress(`${label}: AI provider is busy (rate limit); trying again in ${Math.round(waitMs/1000)}s.`,{label,level:'warning'});
     await sleep(waitMs);
     try {
       const retry = await callGroq({ baseUrl, apiKey, model, prompt, label: `${label} rate-limit retry`, jsonMode: true, temperature, maxOutputTokens });
@@ -117,6 +131,7 @@ async function requestJson({ baseUrl, apiKey, model, prompt, label, temperature 
   // Groq can return HTTP 400 when its JSON validator cannot validate a model
   // generation. Retry once without JSON mode; the prompt still requires JSON,
   // and our parser validates/recoveries the returned object locally.
+  if (firstError?.modelUnavailable) throw firstError;
   try {
     const fallback = await callGroq({ baseUrl, apiKey, model, prompt, label: `${label} text fallback`, jsonMode: false, temperature, maxOutputTokens });
     return parseJson(fallback.content, label);
@@ -166,10 +181,28 @@ export class OpenAICompatibleProvider {
   }
 }
 
+// Any OpenAI-compatible script provider from the catalog (OpenRouter, Mistral,
+// GitHub Models, SambaNova, NVIDIA, Cloudflare, Cohere, Ollama).
+export function compatibleProvider({ name, apiKey, baseUrl, model, textSettings }) {
+  return new OpenAICompatibleProvider({ name, apiKey: apiKey || 'not-needed', baseUrl: String(baseUrl || '').replace(/\/+$/, ''), model, textSettings });
+}
+
 export class GroqProvider extends OpenAICompatibleProvider {
   constructor(model = env.groqTextModel, textSettings = {}) { super({ name: 'Groq', apiKey: env.groqKey, baseUrl: 'https://api.groq.com/openai/v1', model: model || env.groqTextModel, textSettings }); }
 }
 
 export class CerebrasProvider extends OpenAICompatibleProvider {
   constructor(model = env.cerebrasTextModel, textSettings = {}) { super({ name: 'Cerebras', apiKey: env.cerebrasKey, baseUrl: 'https://api.cerebras.ai/v1', model: model || env.cerebrasTextModel, textSettings }); }
+}
+
+// Model ids the provider offers to this key (OpenAI-compatible GET /models).
+const NOT_CHAT = /(embed|rerank|guard|safety|whisper|tts|speech|transcri|audio|image|vision-only|clip|ocr|retriever|nemoretriever|parse|reward|moderation|dall-e|sdxl|flux|stable-diffusion|-vl\b)/i;
+export async function listCompatibleModels({ baseUrl, apiKey, fetchImpl = fetch }) {
+  const r = await fetchImpl(`${String(baseUrl).replace(/\/+$/, '')}/models`, { headers: { Authorization: `Bearer ${apiKey || 'not-needed'}` }, signal: AbortSignal.timeout(20000) });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`Could not load the model list (${r.status}): ${text.slice(0, 300)}`);
+  let data; try { data = JSON.parse(text); } catch { throw new Error('The provider returned an unreadable model list.'); }
+  const items = Array.isArray(data) ? data : (data.data || data.models || data.result || []);
+  const ids = [...new Set(items.map(m => typeof m === 'string' ? m : (m.id || m.name)).filter(Boolean).map(String))];
+  return ids.filter(id => !NOT_CHAT.test(id)).sort((a, b) => (Number(b.endsWith(':free')) - Number(a.endsWith(':free'))) || a.localeCompare(b));
 }

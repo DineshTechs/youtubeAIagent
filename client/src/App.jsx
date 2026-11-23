@@ -1,8 +1,11 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {redactDeep,redactText,safeFileStem} from './redact.js';
-const API='http://127.0.0.1:4000/api';
-const STORAGE='http://127.0.0.1:4000';
-const VIDEO_STATUSES=['ALL','PLANNED','SCRIPT_GENERATED','SCRIPT_QA','ASSETS_GENERATING','VIDEO_RENDERING','VIDEO_QA','AWAITING_APPROVAL','APPROVED','UPLOADING','SCHEDULED','PUBLISHED','FAILED','CANCELLED'];
+// On your PC the dashboard runs on Vite (:5173) and talks to the API on :4000.
+// On a server the built dashboard is served by the API itself, so it uses the same address.
+const DEV_UI=typeof window!=='undefined'&&/^517\d$/.test(window.location.port||'');
+const API=(import.meta.env?.VITE_API_URL)||(DEV_UI?'http://127.0.0.1:4000/api':'/api');
+const STORAGE=API.replace(/\/api$/,'');
+const VIDEO_STATUSES=['ALL','PLANNED','SCRIPT_GENERATED','SCRIPT_QA','ASSETS_GENERATING','VIDEO_RENDERING','VIDEO_QA','SCENE_REVIEW','AWAITING_APPROVAL','APPROVED','UPLOADING','SCHEDULED','PUBLISHED','FAILED','CANCELLED'];
 function pct(job){return Math.max(0,Math.min(100,job?.progress||0));}
 function label(value){return String(value||'').replaceAll('_',' ');}
 function isActive(job){return !!job&&['QUEUED','RUNNING'].includes(job.status);}
@@ -57,6 +60,52 @@ function jobStepProgress(job){
   }));
 }
 
+// What the job is doing right now, with timers that tick every second, so a long
+// wait (an AI provider thinking, an image being drawn) never looks frozen.
+const STAGE_TEXT={TOPIC_SELECTION:'Choosing the topic',STORY_GENERATION:'Writing the script',SCRIPT_QA:'Checking the script',VISUAL_DIRECTOR:'Planning the images',VOICE_GENERATION:'Recording the narration',FFMPEG_RENDER:'Rendering the video',FINAL_QA:'Final checks',UPLOAD:'Uploading'};
+function stageText(stage){const m=/^SCENE_(\d+)_IMAGE$/.exec(stage||'');if(m)return `Drawing scene ${m[1]} image`;return STAGE_TEXT[stage]||label(stage||'Working');}
+function clock(ms){const t=Math.max(0,Math.round(ms/1000));const m=Math.floor(t/60),sec=t%60;return m?`${m}m ${String(sec).padStart(2,'0')}s`:`${sec}s`;}
+function jobTitle(job){if(!['QUEUED','RUNNING'].includes(job?.status))return label(job?.status||job?.step);const running=[...(job.pipelineTrace||[])].reverse().find(x=>x.status==='RUNNING');return job.status==='QUEUED'?'Queued':stageText(running?.stage||job.step);}
+function LiveActivity({job}){
+  const [now,setNow]=useState(Date.now());
+  const shownFor=useRef(null);
+  useEffect(()=>{if(job?._id&&shownFor.current!==String(job._id)&&['QUEUED','RUNNING'].includes(job.status)){shownFor.current=String(job._id);setTimeout(()=>document.querySelector('.jobCard')?.scrollIntoView({behavior:'smooth',block:'nearest'}),150);}},[job?._id]);
+  const active=['QUEUED','RUNNING'].includes(job?.status);
+  useEffect(()=>{if(!active)return;const t=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(t);},[active]);
+  if(!active)return null;
+  const running=[...(job.pipelineTrace||[])].reverse().find(x=>x.status==='RUNNING');
+  const logs=job.logs||[];const last=logs[logs.length-1];
+  const since=running?.startedAt||job.startedAt||job.createdAt;
+  const lastAt=last?.at?new Date(last.at).getTime():null;
+  const beat=job.lastHeartbeatAt?now-new Date(job.lastHeartbeatAt).getTime():null;
+  const waiting=/waiting for|trying again|busy|rate limit|no answer/i.test(last?.message||'');
+  const health=job.status==='QUEUED'?{cls:'wait',text:'Waiting for the worker to pick it up'}:beat==null?{cls:'ok',text:'Worker running'}:beat<45000?{cls:'ok',text:`Worker alive · checked ${clock(beat)} ago`}:beat<120000?{cls:'warn',text:`No sign of life for ${clock(beat)}`}:{cls:'bad',text:`No sign of life for ${clock(beat)} — the backend may have stopped`};
+  return <div className="liveActivity">
+    <div className="liveNow"><span className="spinner" aria-hidden="true"/><b>{job.status==='QUEUED'?'Waiting in the queue':'Working on this step'}</b><span className="liveClock">{since?clock(now-new Date(since).getTime()):''}</span></div>
+    {last&&<div className={`liveLast ${waiting?'waiting':''}`}>{last.message}{lastAt?<em> · {clock(now-lastAt)} ago</em>:null}</div>}
+    <div className={`liveHealth ${health.cls}`}><i/>{health.text}{job.startedAt?<span> · total {clock(now-new Date(job.startedAt).getTime())}</span>:null}</div>
+  </div>;
+}
+// A provider priority list (script / images / narration): numbered rows, ↑ ↓ to
+// reorder, ✕ to remove, test results shown right under the row that was tested.
+function PriorityList({kind,items,order,fallbackEnabled,busy,results,onSave,onTest,onEdit,editLabel,describe,fallbackText}){
+  const usable=order.filter(id=>items[id]?.configured);
+  const others=Object.keys(items).filter(id=>!order.includes(id));
+  const move=(id,dir)=>{const o=[...order];const i=o.indexOf(id),j=i+dir;if(i<0||j<0||j>=o.length)return;[o[i],o[j]]=[o[j],o[i]];onSave({order:o});};
+  return <>
+    <label className="toggle fallbackToggle"><input type="checkbox" checked={fallbackEnabled!==false} disabled={busy} onChange={e=>onSave({fallbackEnabled:e.target.checked})}/><span>{fallbackText}</span></label>
+    <div className="priorityList">{order.map((id,i)=>{const p=items[id]||{name:id};const used=p.configured&&(fallbackEnabled!==false||id===usable[0]);const r=results[`${kind}:${id}`];return <div key={id} className="priorityItem">
+      <div className={`priorityRow ${p.configured?'':'missing'} ${id===usable[0]?'main':''}`}>
+        <span className="prioNum">{i+1}</span>
+        <div className="prioInfo"><strong>{p.name}{id===usable[0]?<em className="tag">main</em>:used?<em className="tag soft">backup</em>:null}</strong><small>{describe(id,p)}{p.configured?'':' · ⚠ not set up — skipped'}{!used&&p.configured?' · not used while backups are off':''}</small></div>
+        <span className={`statusDot ${p.configured?'online':''}`}/>
+        <div className="prioBtns"><button className="ghost icon" title="Move up" disabled={busy||i===0} onClick={()=>move(id,-1)}>↑</button><button className="ghost icon" title="Move down" disabled={busy||i===order.length-1} onClick={()=>move(id,1)}>↓</button>{p.configured?<button className="ghost" disabled={busy} onClick={()=>onTest(id)}>{r?.pending?'Testing…':'Test'}</button>:null}{onEdit?<button className="ghost" onClick={()=>onEdit(id)}>{editLabel(id,p)}</button>:null}<button className="ghost" title="Stop using" disabled={busy||order.length<=1} onClick={()=>onSave({order:order.filter(x=>x!==id)})}>✕</button></div>
+      </div>
+      {r&&<div className={`prioResult ${r.pending?'pending':r.ok?'ok':'bad'}`}>{r.pending?<><span className="spinner" aria-hidden="true"/>Testing {p.name}…</>:<>{r.ok?'✓':'✕'} {r.message}<em> · {new Date(r.at).toLocaleTimeString()}</em></>}</div>}
+    </div>})}</div>
+    {others.length>0&&<div className="formSection"><h4>Not in the list</h4><div className="otherProviders">{others.map(id=>{const p=items[id];return <div key={id} className="otherProvider"><div><strong>{p.name}</strong><small>{id==='mock'?'for testing, no real output':p.freeTier?'🆓 free tier':'💳 paid'}{p.configured?'':' · not set up'}</small></div>{p.configured?<button className="ghost" disabled={busy} onClick={()=>onSave({order:[...order,id]})}>+ Add</button>:onEdit?<button className="ghost" onClick={()=>onEdit(id)}>Set up</button>:null}</div>})}</div></div>}
+  </>;
+}
 function JobStepProgress({job}){
   const steps=jobStepProgress(job);
   const completed=steps.filter(x=>x.done).length;
@@ -200,10 +249,15 @@ function Icon({name,size=18}){return <svg width={size} height={size} viewBox="0 
 const FORMAT_OPTIONS=['Explainer','Story Short','Storytelling','Documentary','Tutorial','Commentary','Review','News & Analysis','Interview','Listicle','Case Study','Fact Short','Educational Short'];
 const HOOK_OPTIONS=['Curiosity','Question','Surprise','Emotional','Problem / Solution'];
 const DURATION_OPTIONS=[30,35,45,55,60,90];
-const PROFILE_SECTIONS=[['channel','Channel'],['content','Content rules'],['voice','Voice & captions'],['youtube','YouTube'],['research','Research']];
+const PROFILE_SECTIONS=[['channel','Channel'],['content','Content rules'],['voice','Voice & captions'],['youtube','YouTube'],['autopilot','Autopilot'],['telegram','Telegram'],['research','Research']];
+const DAY_NAMES=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DEFAULT_AUTOPILOT={enabled:false,times:['12:30','19:30'],days:[0,1,2,3,4,5,6],leadMinutes:90,minQaScore:70,visibility:'public',blockStaleImages:true};
+function autopilotFormFrom(a={}){const x=a&&typeof a==='object'?a:{};return {enabled:x.enabled===true,times:Array.isArray(x.times)&&x.times.length?[...x.times]:[...DEFAULT_AUTOPILOT.times],days:Array.isArray(x.days)&&x.days.length?[...x.days]:[...DEFAULT_AUTOPILOT.days],leadMinutes:Number(x.leadMinutes)||90,minQaScore:Number.isFinite(Number(x.minQaScore))&&x.minQaScore!==undefined?Number(x.minQaScore):70,visibility:['public','unlisted','private'].includes(x.visibility)?x.visibility:'public',blockStaleImages:x.blockStaleImages!==false};}
+const RUN_LABEL={GENERATING:'Making video',APPROVED:'Uploading',SCHEDULED:'Scheduled on YouTube',PUBLISHED:'Uploaded',NEEDS_ATTENTION:'Needs attention',FAILED:'Failed',SKIPPED:'Skipped'};
+const EMPTY_TG={enabled:false,commandsEnabled:false,hasToken:false,botUsername:'',chats:[],events:{},eventCatalog:[],sendVideoOnReady:true,lastError:'',lastSentAt:null};
 const EMPTY_YT_ACCOUNT={clientId:'',hasClientSecret:false,redirectUri:'',defaultRedirectUri:'http://127.0.0.1:4000/api/youtube/callback',publishEnabled:false,configured:false,connected:false};
 const YT_CATEGORIES=[['1','Film & Animation'],['2','Autos & Vehicles'],['10','Music'],['15','Pets & Animals'],['17','Sports'],['19','Travel & Events'],['20','Gaming'],['22','People & Blogs'],['23','Comedy'],['24','Entertainment'],['25','News & Politics'],['26','Howto & Style'],['27','Education'],['28','Science & Technology'],['29','Nonprofits & Activism']];
-const VOICE_PRESETS={groq:['autumn','diana','hannah','austin','daniel','troy'],openai:['alloy','ash','ballad','coral','echo','fable','nova','onyx','sage','shimmer','verse'],gemini:['Kore','Zephyr','Puck','Charon','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat']};
+const VOICE_PRESETS={azure:['hi-IN-SwaraNeural','hi-IN-MadhurNeural','hi-IN-AaravNeural','hi-IN-AnanyaNeural','hi-IN-KavyaNeural','hi-IN-KunalNeural','hi-IN-RehaanNeural','en-IN-NeerjaNeural','en-IN-PrabhatNeural'],google:['hi-IN-Wavenet-A','hi-IN-Wavenet-B','hi-IN-Wavenet-C','hi-IN-Wavenet-D','hi-IN-Standard-A','hi-IN-Standard-B','hi-IN-Standard-C','hi-IN-Standard-D','hi-IN-Neural2-A','hi-IN-Neural2-B','hi-IN-Chirp3-HD-Kore','hi-IN-Chirp3-HD-Puck'],groq:['autumn','diana','hannah','austin','daniel','troy'],openai:['alloy','ash','ballad','coral','echo','fable','nova','onyx','sage','shimmer','verse'],gemini:['Kore','Zephyr','Puck','Charon','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat']};
 const TIMEZONES=['Asia/Kolkata','UTC','Europe/London','Europe/Berlin','America/New_York','America/Chicago','America/Los_Angeles','Asia/Dubai','Asia/Singapore','Asia/Tokyo','Australia/Sydney'];
 const joinList=v=>Array.isArray(v)?v.filter(Boolean).join('\n'):String(v||'');
 const splitList=v=>[...new Set(String(v||'').split(/[\n,]/).map(x=>x.trim()).filter(Boolean))];
@@ -217,7 +271,7 @@ function uploadFormFrom(u={},{kids=false}={}){
     descriptionFooter:u.descriptionFooter||'',seoKeywords:(Array.isArray(u.seoKeywords)?u.seoKeywords:[]).join(', '),playlistId:u.playlistId||'',scheduleTime:u.scheduleTime||'',timezone:u.timezone||'Asia/Kolkata'};
 }
 function uploadPayload(u){return {...u,tags:splitList(u.tags),seoKeywords:splitList(u.seoKeywords),hashtags:String(u.hashtags||'').split(/[\s,]+/).map(h=>h.replace(/^#+/,'')).filter(Boolean),titleTemplate:u.titleTemplate.trim()||'{title}',playlistId:u.playlistId.trim(),descriptionFooter:u.descriptionFooter.trim()};}
-const DEFAULT_PROFILE_FORM={name:'',premise:'',niche:'',targetAge:'General audience',language:'English',visualStyle:'Cinematic, high-quality visuals',tone:'Engaging and informative',contentFormat:'Explainer',aspectRatio:'9:16',voiceStyle:'Natural, clear and engaging',durationSec:55,hookStyle:'Curiosity',callToAction:'',rules:'',avoidTopics:'',topicIdeas:'',subtitles:'default',subtitlePosition:'default',voices:{},upload:uploadFormFrom({})};
+const DEFAULT_PROFILE_FORM={name:'',premise:'',niche:'',targetAge:'General audience',language:'English',visualStyle:'Cinematic, high-quality visuals',tone:'Engaging and informative',contentFormat:'Explainer',aspectRatio:'9:16',voiceStyle:'Natural, clear and engaging',durationSec:55,hookStyle:'Curiosity',topicSource:'queue-then-trending',trendRegion:'IN',callToAction:'',rules:'',avoidTopics:'',topicIdeas:'',subtitles:'default',subtitlePosition:'default',voices:{},upload:uploadFormFrom({}),autopilot:autopilotFormFrom({})};
 const KIDS_RE=/kids?|children|preschool|toddler/i;
 
 // One place that turns a saved series into the editable profile form
@@ -236,11 +290,13 @@ function formFromSeries(x){
     voiceStyle:cp.narration?.voiceStyle||'Natural, clear and engaging',
     durationSec:Number(cp.content?.durationSec)||55,
     hookStyle:cp.content?.hookStyle||'Curiosity',
+    topicSource:['queue-then-trending','trending','queue'].includes(cp.content?.topicSource)?cp.content.topicSource:'queue-then-trending',trendRegion:/^[A-Z]{2}$/.test(cp.content?.trendRegion||'')?cp.content.trendRegion:'IN',
     callToAction:cp.content?.callToAction&&cp.content.callToAction!=='Natural and relevant to the channel'?cp.content.callToAction:'',
     rules:joinList(x.rules),avoidTopics:joinList(cp.editorial?.avoidTopics),topicIdeas:joinList(x.topicIdeas),
     subtitles:['on','off'].includes(cp.visual?.subtitles)?cp.visual.subtitles:'default',
     subtitlePosition:['bottom','center','top'].includes(cp.visual?.subtitlePosition)?cp.visual.subtitlePosition:'default',
     voices:Object.fromEntries(Object.entries(cp.narration?.voices||{}).filter(([,v])=>v)),
+    autopilot:autopilotFormFrom(x.autopilot),
     upload:uploadFormFrom(x.uploadSettings||{},{kids:cp.editorial?.safetyMode==='kids-and-family'||KIDS_RE.test(`${x.niche||''} ${cp.audience?.description||''}`)})
   };
 }
@@ -259,7 +315,7 @@ function ProfileChips({form}){
   return <div className="profileChips">{items.map(([k,v])=><div key={k} className="chip"><small>{k}</small><b title={v}>{v||'—'}</b></div>)}</div>;
 }
 
-function VideoRow({v,onOpen,onApprove,onCancel,onRetry,onDelete,compact}){
+function VideoRow({v,onOpen,onApprove,onCancel,onRetry,onDelete,onRender,compact}){
   const j=v.latestJob;const active=isActive(j);const thumb=thumbUrl(v);
   return <article className={`videoRow ${compact?'compact':''}`}>
     <button className="thumb" onClick={()=>onOpen(v._id)} aria-label={`Open ${v.title}`}>{thumb?<img src={thumb} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display='none'}}/>:<span>{(v.title||'?').slice(0,1)}</span>}</button>
@@ -274,6 +330,7 @@ function VideoRow({v,onOpen,onApprove,onCancel,onRetry,onDelete,compact}){
       <button className="ghost" onClick={()=>onOpen(v._id)}>Details</button>
       {!compact&&videoFileUrl(v)&&<a className="btnLink" href={videoFileUrl(v)} target="_blank" rel="noreferrer">Preview</a>}
       {v.status==='AWAITING_APPROVAL'&&<button onClick={()=>onApprove(v._id)}>Approve</button>}
+      {v.status==='SCENE_REVIEW'&&<button onClick={()=>onRender(v._id)} title={v.pendingSceneEdit?.sceneNumber?`Scene ${v.pendingSceneEdit.sceneNumber} was changed; render the video with it`:''}>Render video</button>}
       {v.status==='APPROVED'&&!compact&&<button onClick={()=>onOpen(v._id,'youtube')}>Upload</button>}
       {active&&(j?.cancelRequested?<button className="danger" disabled>Stopping…</button>:<button className="danger" onClick={()=>onCancel(v._id)}>Cancel</button>)}
       {['FAILED','CANCELLED'].includes(v.status)&&!active&&<button onClick={()=>onRetry(v._id)}>Continue</button>}
@@ -345,11 +402,74 @@ function YouTubePanel({video,onDone,onEditProfile}){
   </section>;
 }
 
+// Settings → Home page.
+function SiteSettingsCard({site,setSite,load,save,busy,msg}){
+  useEffect(()=>{if(!site)load();},[]);
+  const f=(k,label,hint,props={})=><Field label={label} hint={hint}><input value={site?.[k]||''} onChange={e=>setSite(s=>({...s,[k]:e.target.value}))} {...props}/></Field>;
+  const area=(k,label,hint,rows=4)=><Field wide label={label} hint={hint}><textarea rows={rows} value={site?.[k]||''} onChange={e=>setSite(s=>({...s,[k]:e.target.value}))}/></Field>;
+  return <Card eyebrow="PUBLIC PAGE" title="Home page details" actions={<><a className="ghost small btnLink" href="/" target="_blank" rel="noreferrer">Open home page</a><button onClick={save} disabled={busy||!site}>{busy?'Saving…':'Save'}</button></>}>
+    <p className="muted small">Shown on the public home page. Leave a contact empty to hide it (email, WhatsApp and Telegram then show “to be added”).</p>
+    {!site?<p className="muted">Loading…</p>:<>
+      <div className="formSection"><h4>Brand</h4><div className="formGrid">
+        {f('brand','Product name','Shown in the header and page title.')}
+        {f('business','Business / owner name','Shown in the footer. Empty = product name.')}
+      </div></div>
+      <div className="formSection"><h4>Contact</h4><div className="formGrid">
+        {f('email','Email','Buyers get a pre-filled email with the plan they chose.',{type:'email',placeholder:'support@aividman.store'})}
+        {f('whatsapp','WhatsApp number','With country code, e.g. 919876543210. Opens WhatsApp with the chosen plan.',{inputMode:'tel',placeholder:'919876543210'})}
+        {f('telegram','Telegram username','Without @, e.g. aivm_support.',{placeholder:'aivm_support'})}
+        {f('instagram','Instagram username','Optional.',{placeholder:'aivideomanager'})}
+        {f('phone','Phone','Optional.',{inputMode:'tel'})}
+        {f('supportHours','Support hours','Optional, e.g. Mon–Sat, 10 am – 7 pm IST.')}
+      </div></div>
+      <div className="formSection"><h4>Policies</h4><div className="formGrid">
+        {area('refund','Refund policy','One or two sentences, shown in the FAQ.',2)}
+        {area('terms','Terms of use','Optional. Shown at the bottom of the home page when filled in.',6)}
+        {area('privacy','Privacy policy','Optional. Shown at the bottom of the home page when filled in.',6)}
+      </div></div>
+    </>}
+    {msg&&<div className={`prioResult ${msg.ok?'ok':'bad'}`}>{msg.ok?'✓':'✕'} {msg.text}</div>}
+  </Card>;
+}
+
+// Login for a hosted install (the server asks for it; on your own PC there is none).
+function LoginScreen({locked,onLogin}){
+  const [form,setForm]=useState({username:'admin',password:''}),[busy,setBusy]=useState(false),[msg,setMsg]=useState('');
+  async function submit(e){e.preventDefault();setBusy(true);setMsg('');try{const r=await fetch(`${API}/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(form)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||`Login failed (${r.status})`);setForm(f=>({...f,password:''}));onLogin(j);}catch(err){setMsg(err.message)}finally{setBusy(false)}}
+  return <div className="loginPage"><form className="loginCard" onSubmit={submit}>
+    <div className="brand"><div className="logo">AI</div><div><b>AI Video Manager</b><small>Channel Studio</small></div></div>
+    {locked?<div className="banner error"><span>This server has no admin password yet. Set <code>ADMIN_PASSWORD</code> (or <code>ADMIN_PASSWORD_HASH</code>) in the app's environment variables and restart it.</span></div>:<>
+      <label>Username<input autoComplete="username" value={form.username} onChange={e=>setForm(f=>({...f,username:e.target.value}))}/></label>
+      <label>Password<input type="password" autoComplete="current-password" autoFocus value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))}/></label>
+      {msg&&<div className="prioResult bad">✕ {msg}</div>}
+      <button type="submit" disabled={busy||!form.password}>{busy?'Signing in…':'Sign in'}</button>
+    </>}
+  </form></div>;
+}
+
 function App(){
+ const [auth,setAuth]=useState({checked:false,required:false,loggedIn:true,locked:false,username:null});
+ async function loadAuth(){try{const r=await fetch(`${API}/auth/status`,{credentials:'include',cache:'no-store'});if(r.status===404){setAuth({checked:true,required:false,loggedIn:true});return;}const j=await r.json();setAuth({checked:true,required:Boolean(j.required),loggedIn:Boolean(j.loggedIn),locked:Boolean(j.required&&!j.configured),username:j.username||null});}catch{setAuth(a=>({...a,checked:true}))}}
+ useEffect(()=>{loadAuth();const onNeed=()=>setAuth(a=>a.required||a.checked?{...a,required:true,loggedIn:false}:a);window.addEventListener('yta-login-required',onNeed);return()=>window.removeEventListener('yta-login-required',onNeed);},[]);
+ async function logout(){try{await fetch(`${API}/auth/logout`,{method:'POST',credentials:'include'});}catch{}setAuth(a=>({...a,loggedIn:false}));}
+
+ const pollingRef=useRef(null),[activeJobs,setActiveJobs]=useState([]);
  const [videos,setVideos]=useState([]),[job,setJob]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [ai,setAi]=useState(null),[aiBusy,setAiBusy]=useState(false),[aiMsg,setAiMsg]=useState(''),[aiSavedAt,setAiSavedAt]=useState(null);
  const [seriesList,setSeriesList]=useState([]),[selectedSeriesId,setSelectedSeriesId]=useState(''),[seriesForm,setSeriesForm]=useState({...DEFAULT_PROFILE_FORM});
  const [genSeriesId,setGenSeriesId]=useState('');
+ const [tgForm,setTgForm]=useState({botToken:'',enabled:false,commandsEnabled:false,chats:[],events:{},sendVideoOnReady:true}),[tgMsg,setTgMsg]=useState(''),[tgBusy,setTgBusy]=useState(false),[tgFound,setTgFound]=useState(null),[tgManual,setTgManual]=useState(''),[tgCopyFrom,setTgCopyFrom]=useState('');
+ const [trendIdeas,setTrendIdeas]=useState(null),[trendBusy,setTrendBusy]=useState(false),[trendMsg,setTrendMsg]=useState('');
+ const [textModelList,setTextModelList]=useState({provider:'',models:[],msg:''});
+ const [restartNeeded,setRestartNeeded]=useState(false);
+ const [providerTab,setProviderTab]=useState('script');
+ // Settings → Home page: product name and contact details shown on the public home page (/).
+ const [site,setSite]=useState(null),[siteMsg,setSiteMsg]=useState(null),[siteBusy,setSiteBusy]=useState(false);
+ async function loadSite(){try{setSite(await apiJson('/site',{},0));}catch(e){setSiteMsg({ok:false,text:/Not found|404|Cannot GET/i.test(e.message)?'Restart the app to edit the home page (the backend is running the previous version).':e.message});}}
+ async function saveSite(){setSiteBusy(true);setSiteMsg(null);try{const j=await apiJson('/site',json('PUT',site),0);setSite(j);setSiteMsg({ok:true,text:'Saved. The home page shows the new details now.'});}catch(e){setSiteMsg({ok:false,text:e.message});}finally{setSiteBusy(false)}}
+ const [testResults,setTestResults]=useState({}),[imageEdit,setImageEdit]=useState(null),[ttsEdit,setTtsEdit]=useState(null);
+ const [textKeyProvider,setTextKeyProvider]=useState('openrouter'),[textKeyForm,setTextKeyForm]=useState({key:'',accountId:'',baseUrl:'',model:''});
+ const [ttsKeyForm,setTtsKeyForm]=useState({key:'',region:'',url:'',tool:'',enhance:false}),[ttsVoiceList,setTtsVoiceList]=useState(null),[keyProvider,setKeyProvider]=useState('aiawaaz'),[ttsVoiceMsg,setTtsVoiceMsg]=useState('');
  const [profileSection,setProfileSection]=useState('channel'),[ytForm,setYtForm]=useState({clientId:'',clientSecret:'',redirectUri:'',publishEnabled:false}),[ytMsg,setYtMsg]=useState(''),[ytBusy,setYtBusy]=useState(false);
  const [seriesLoaded,setSeriesLoaded]=useState(false),[aiError,setAiError]=useState('');
  const [channelUrl,setChannelUrl]=useState(''),[researchBusy,setResearchBusy]=useState(false),[researchMsg,setResearchMsg]=useState(''),[topicInput,setTopicInput]=useState(''),[pendingResearch,setPendingResearch]=useState(null);
@@ -365,6 +485,7 @@ function App(){
        const r=await fetch(`${API}${path}`,{cache:'no-store',...options});
        const text=await r.text();
        let j={}; try{j=text?JSON.parse(text):{};}catch{j={error:text||`HTTP ${r.status}`};}
+       if(r.status===401&&j.loginRequired)window.dispatchEvent(new Event('yta-login-required'));
        if(!r.ok) throw new Error(j.error||`Request failed (${r.status})`);
        setBackendStatus('online');
        return j;
@@ -382,7 +503,7 @@ function App(){
  const json=(method,body)=>({method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  // Load errors clear themselves once the automatic retry succeeds.
  const clearLoadError=()=>setError(e=>/^Failed to load/.test(e)?'':e);
- async function checkBackend(){try{await apiJson('/health',{},1);}catch{} }
+ async function checkBackend(){try{const h=await apiJson('/health',{},1);setRestartNeeded(Boolean(h?.restartNeeded));}catch{} }
  async function loadSeries(resetEditor=false){try{
    const j=await apiJson('/series');const list=Array.isArray(j)?j:[];setSeriesList(list);setSeriesLoaded(true);clearLoadError();
    const active=list.find(x=>x.active)||list[0];
@@ -405,13 +526,13 @@ function App(){
    // Merge into the existing saved profile so research-derived fields are kept.
    const channelProfile={...existing,version:1,channelName:f.name||'YouTube Channel',niche:f.niche,language:f.language||'English',
      audience:{...(existing.audience||{}),description:f.targetAge||'General audience',knowledgeLevel:existing.audience?.knowledgeLevel||'general'},
-     content:{...(existing.content||{}),primaryFormat:f.contentFormat||'Explainer',tone:f.tone||'Engaging and informative',hookStyle:f.hookStyle||'Curiosity',durationSec:Number(f.durationSec)||55,storytellingApproach:existing.content?.storytellingApproach||'Clear and niche-appropriate',callToAction:f.callToAction.trim()},
+     content:{...(existing.content||{}),primaryFormat:f.contentFormat||'Explainer',tone:f.tone||'Engaging and informative',hookStyle:f.hookStyle||'Curiosity',durationSec:Number(f.durationSec)||55,storytellingApproach:existing.content?.storytellingApproach||'Clear and niche-appropriate',callToAction:f.callToAction.trim(),topicSource:f.topicSource,trendRegion:f.trendRegion},
      visual:{...(existing.visual||{}),style:f.visualStyle||'Cinematic, high-quality visuals',aspectRatio:f.aspectRatio||'9:16',avoidTextInImages:true,subtitleSafeArea:true,subtitles:f.subtitles,subtitlePosition:f.subtitlePosition},
      narration:{...(existing.narration||{}),voiceStyle:f.voiceStyle||'Natural, clear and engaging',language:f.language||'English',voices:f.voices||{}},
      editorial:{...(existing.editorial||{}),avoidTopics:splitLines(f.avoidTopics),safetyMode:kids?'kids-and-family':(existing.editorial?.safetyMode&&existing.editorial.safetyMode!=='kids-and-family'?existing.editorial.safetyMode:'standard'),factChecking:existing.editorial?.factChecking!==false},
      source:existing.source==='channel-research'?'channel-research':'user-configured'};
    const payload={name:f.name.trim(),premise:f.premise.trim(),niche:f.niche,targetAge:f.targetAge,language:f.language,visualStyle:f.visualStyle,channelProfile,
-     rules:splitLines(f.rules),topicIdeas:splitLines(f.topicIdeas),uploadSettings:uploadPayload(f.upload),
+     rules:splitLines(f.rules),topicIdeas:splitLines(f.topicIdeas),uploadSettings:uploadPayload(f.upload),autopilot:{...f.autopilot,timezone:f.upload.timezone},
      ...(pendingResearch?{channelResearch:pendingResearch.research,contentStrategy:pendingResearch.research?.strategy}:{})};
    try{
      const j=selectedSeriesId?await apiJson(`/series/${selectedSeriesId}`,json('PUT',payload)):await apiJson('/series',json('POST',{...payload,active:seriesList.length===0}));
@@ -446,48 +567,53 @@ function App(){
  function pickProfileFilter(id){setProfileFilter(id);profileFilterRef.current=id;refresh(filterRef.current,id);}
  async function refresh(nextFilter=filterRef.current,nextProfile=profileFilterRef.current){try{const q=new URLSearchParams();if(nextFilter&&nextFilter!=='ALL')q.set('status',nextFilter);if(nextProfile&&nextProfile!=='ALL')q.set('seriesId',nextProfile);const url=`/videos${q.toString()?`?${q}`:''}`;const j=await apiJson(url);setVideos(Array.isArray(j)?j:[]);clearLoadError();}catch(e){setError(`Failed to load videos: ${e.message}`)}}
  async function refreshStats(){try{const j=await apiJson('/videos/stats',{},1);setStats(j);}catch{} }
+ // Jobs started anywhere (another tab, Telegram, Autopilot, before a page reload) show up in the LIVE card.
+ async function refreshActive(){try{const list=await apiJson('/agent/active',{},0);setActiveJobs(Array.isArray(list)?list:[]);if(!pollingRef.current&&Array.isArray(list)&&list.length){const first=list.find(x=>x.status==='RUNNING')||list[0];setJob(first);setBusy(true);poll(first._id);}}catch{}}
  async function loadAI(){try{const j=await apiJson('/ai/settings');setAi(j);setAiError('');}catch(e){setAiError(e.message||'Backend unavailable');}}
  async function chooseAI(provider){setAiBusy(true);setAiMsg('');try{const j=await apiJson('/ai/settings',json('PUT',{provider}),0);setAi(j);setAiMsg(`Script AI changed to ${j.providers[provider].name}.`);}catch(e){setAiMsg(e.message)}finally{setAiBusy(false)}}
  async function chooseMedia(type,provider){setAiBusy(true);setAiMsg('');try{const j=await apiJson('/ai/media-settings',json('PUT',{type,provider}),0);setAi(j);setAiSavedAt(new Date());setAiMsg(`${type==='image'?'Image':'Narration'} provider changed to ${provider}.`);}catch(e){setAiMsg(e.message)}finally{setAiBusy(false)}}
  async function saveAIConfig(patch,what='Settings'){setAiBusy(true);setAiMsg('Saving…');try{const j=await apiJson('/ai/config',json('PUT',patch),0);setAi(j);setAiSavedAt(new Date());setAiMsg(`${what} saved.`);}catch(e){setAiMsg(e.message)}finally{setAiBusy(false)}}
- async function testMedia(type,provider){setAiBusy(true);setAiMsg(`Testing ${provider} ${type}…`);try{const r=await fetch(`${API}/ai/test-media/${type}/${provider}`,{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error);setAiMsg(`${provider} ${type} credentials are ready.`);await loadAI();}catch(e){setAiMsg(e.message)}finally{setAiBusy(false)}}
- async function testAI(provider){setAiBusy(true);setAiMsg(`Testing ${ai.providers[provider].name}…`);try{const r=await fetch(`${API}/ai/test/${provider}`,{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error);setAiMsg(`${ai.providers[provider].name} connection successful.`);await loadAI();}catch(e){setAiMsg(e.message)}finally{setAiBusy(false)}}
+ async function testMedia(type,provider){const k=`${type}:${provider}`;setTestResults(x=>({...x,[k]:{pending:true}}));setAiBusy(true);try{const r=await fetch(`${API}/ai/test-media/${type}/${provider}`,{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error);setTestResults(x=>({...x,[k]:{ok:true,message:j.result?.message||'Works.',at:Date.now()}}));await loadAI();}catch(e){setTestResults(x=>({...x,[k]:{ok:false,message:/Cannot POST|404/i.test(e.message)?'The backend is running the previous version — restart the app.':e.message,at:Date.now()}}))}finally{setAiBusy(false)}}
+ async function testAI(provider){const k=`text:${provider}`;setTestResults(x=>({...x,[k]:{pending:true}}));setAiBusy(true);try{const r=await fetch(`${API}/ai/test/${provider}`,{method:'POST'});const j=await r.json();if(!j.ok)throw new Error(j.error);setTestResults(x=>({...x,[k]:{ok:true,message:`${ai.providers[provider].name} answered${j.result?.message?`: “${String(j.result.message).slice(0,120)}”`:'.'}`,at:Date.now()}}));await loadAI();}catch(e){setTestResults(x=>({...x,[k]:{ok:false,message:e.message,at:Date.now()}}))}finally{setAiBusy(false)}}
  // Generation uses the SAVED profile only; the request carries profile + optional topic.
  async function generate(){if(!genSeriesId){setError('Create or choose a channel profile first.');return;}setBusy(true);setError('');setNotice('');try{const j=await apiJson('/agent/generate',json('POST',{seriesId:genSeriesId,topic:topicInput.trim()||null}));setJob(j);setNotice(j.profile?`Generating with "${j.profile.name}" · ${j.profile.language} · ${j.profile.format} · ${j.profile.durationSec}s · ${j.profile.hookStyle} hook`:'');poll(j.jobId);}catch(e){setError(`Generation request failed: ${e.message}`);setBusy(false)}}
- async function poll(id,networkFailures=0){try{const j=await apiJson(`/agent/status/${id}`,{},1);setJob(j);if(['COMPLETED','FAILED','CANCELLED'].includes(j.status)){setBusy(false);setQaBusy(false);await refresh();await refreshStats();return;}setTimeout(()=>poll(id,0),1200);}catch(e){if(networkFailures<5){setBackendStatus('offline');setTimeout(()=>poll(id,networkFailures+1),1500);return;}setError(`Job status unavailable: ${e.message}`);setBusy(false);setQaBusy(false)}}
+ async function poll(id,networkFailures=0){pollingRef.current=String(id);try{const j=await apiJson(`/agent/status/${id}`,{},1);setJob(j);if(['COMPLETED','FAILED','CANCELLED'].includes(j.status)){pollingRef.current=null;setBusy(false);setQaBusy(false);await refresh();await refreshStats();return;}setTimeout(()=>poll(id,0),1200);}catch(e){if(networkFailures<5){setBackendStatus('offline');setTimeout(()=>poll(id,networkFailures+1),1500);return;}pollingRef.current=null;setError(`Job status unavailable: ${e.message}`);setBusy(false);setQaBusy(false)}}
  async function approve(id){try{await apiJson(`/videos/${id}/approve`,{method:'POST'});setError('');await refresh();await refreshStats();if(selected?._id===id)await openVideo(id,detailTab);}catch(e){setError(`Approve failed: ${e.message}`)}}
  async function retryVideo(id){setError('');setBusy(true);try{const j=await apiJson(`/videos/${id}/retry`,{method:'POST'},2);setSelected(null);setJob(j);setTab('create');await refresh();await refreshStats();poll(j.jobId);}catch(e){setBusy(false);setError(`Continue failed: ${e.message}`)}}
+ async function renderVideo(id){if(!window.confirm('Render the video with the changed scene now?'))return;try{const j=await apiJson(`/videos/${id}/render`,{method:'POST'},0);setError('');setSelected(null);setJob(j);setBusy(true);setTab('create');await refresh();await refreshStats();poll(j.jobId);}catch(e){setError(`Render failed: ${e.message}`)}}
  async function cancelVideo(id){try{await apiJson(`/videos/${id}/cancel`,{method:'POST'});setError('');await refresh();await refreshStats();}catch(e){setError(`Cancel failed: ${e.message}`)}}
  async function deleteVideo(id){if(!window.confirm('Permanently delete this generated video, its media files, generation jobs and unused story data? This cannot be undone.'))return;try{await apiJson(`/videos/${id}`,{method:'DELETE'},2);setSelected(null);setError('');await refresh();await refreshStats();}catch(e){setError(`Delete failed: ${e.message}`)}}
  async function openVideo(id,startTab='overview'){try{const j=await apiJson(`/videos/${id}`);setSelected(j);setDetailTab(startTab);setVisualChecks({imagesMatch:!!j.visualReview?.imagesMatch,subtitlesReadable:!!j.visualReview?.subtitlesReadable,ageAppropriate:!!j.visualReview?.ageAppropriate});setError('');}catch(e){setError(`Failed to load video: ${e.message}`)}}
  async function refreshSelected(){if(selected?._id)await openVideo(selected._id,detailTab);await refresh();await refreshStats();}
  async function rerunQA(){if(!selected?._id)return;setQaBusy(true);try{await apiJson(`/videos/${selected._id}/qa`,{method:'POST'});await refreshSelected();}catch(e){setError(`QA failed: ${e.message}`)}finally{setQaBusy(false)}}
  async function regenerateScene(sceneNumber){if(!selected?._id)return;if(!window.confirm(`Regenerate only scene ${sceneNumber}? Other images and narration will be reused, then the video will be re-rendered.`))return;setQaBusy(true);try{const j=await apiJson(`/videos/${selected._id}/scenes/${sceneNumber}/regenerate`,{method:'POST'});setError('');setSelected(null);setBusy(true);setJob(j);setTab('create');poll(j.jobId);}catch(e){setError(`Scene regeneration failed: ${e.message}`);setQaBusy(false)}}
+ async function rebuildImages(){if(!selected?._id)return;if(!window.confirm(`Re-plan all ${(selected.storyId?.scenes||[]).length} scenes from the narration and make new images, then re-render?`))return;setQaBusy(true);try{const j=await apiJson(`/videos/${selected._id}/rebuild-images`,json('POST',{replan:true}),0);setError('');setSelected(null);setBusy(true);setJob(j);setTab('create');poll(j.jobId);}catch(e){setError(`Rebuild failed: ${e.message}`);setQaBusy(false)}}
  async function rerenderOnly(){if(!selected?._id)return;setQaBusy(true);try{const j=await apiJson(`/videos/${selected._id}/rerender`,{method:'POST'});setError('');setSelected(null);setBusy(true);setJob(j);setTab('create');poll(j.jobId);}catch(e){setError(`Re-render failed: ${e.message}`);setQaBusy(false)}}
  async function saveVisualReview(){if(!selected?._id)return;try{await apiJson(`/videos/${selected._id}/visual-review`,json('POST',visualChecks));await refreshSelected();}catch(e){setError(`Visual review not saved: ${e.message}`)}}
 
- useEffect(()=>{checkBackend();refresh();refreshStats();loadAI();loadSeries(true);},[]);
+ useEffect(()=>{checkBackend();refresh();refreshStats();refreshActive();loadAI();loadSeries(true);},[]);
  // Poll videos/stats, and keep retrying settings/profiles until they have loaded
  // (they used to load only once, so a backend restart left Settings stuck on "Loading").
  const aiRef=useRef(null),seriesLoadedRef=useRef(false);aiRef.current=ai;seriesLoadedRef.current=seriesLoaded;
  filterRef.current=filter;profileFilterRef.current=profileFilter;
- useEffect(()=>{const timer=setInterval(()=>{checkBackend();refresh();refreshStats();if(!aiRef.current)loadAI();if(!seriesLoadedRef.current)loadSeries(true);},3000);return()=>clearInterval(timer)},[filter]);
+ useEffect(()=>{const timer=setInterval(()=>{checkBackend();refresh();refreshStats();refreshActive();if(!aiRef.current)loadAI();if(!seriesLoadedRef.current)loadSeries(true);},3000);return()=>clearInterval(timer)},[filter]);
  const prevBackend=useRef(backendStatus);
  useEffect(()=>{if(prevBackend.current!=='online'&&backendStatus==='online'&&prevBackend.current!=='checking'){loadAI();loadSeries();refresh();refreshStats();}prevBackend.current=backendStatus;},[backendStatus]);
  useEffect(()=>{if(!selected)return;const onKey=e=>{if(e.key==='Escape')setSelected(null)};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[selected]);
 
  const providers=ai?.providers||{};
  const counts=stats?.stats||{};
- const imageProvider=ai?.media?.imageProvider||'openai';
- const ttsProvider=ai?.media?.ttsProvider||'groq';
+ // The model / voice fields edit the provider picked with “Model” / “Voice” (default: the main one).
+ const imageProvider=imageEdit||ai?.media?.imageProvider||'openai';
+ const ttsProvider=ttsEdit||ai?.media?.ttsProvider||'groq';
  const imageModel=ai?.media?.imageModels?.[imageProvider]||ai?.media?.imageModel||'';
  const ttsModel=ai?.media?.ttsModels?.[ttsProvider]||ai?.media?.ttsModel||'';
  const ttsVoice=ai?.media?.ttsVoices?.[ttsProvider]||ai?.media?.ttsVoice||'';
  const imageSize=ai?.media?.imageSizes?.[imageProvider]||ai?.media?.imageSize||'';
  const imageSizeOptions={gemini:['1K','2K','4K'],openai:['1024x1024','1024x1536','1536x1024'],cloudflare:['1024x1024','1024x1536','1536x1024','1080x1920'],pollinations:['768x1344','1024x1792','1080x1920','1536x2048'],mock:['1080x1920']}[imageProvider]||['1080x1920'];
  const imageModelPresets={gemini:['gemini-nano-banana-2.1'],openai:['gpt-image-2'],cloudflare:['@cf/black-forest-labs/flux-1-schnell'],pollinations:['black-forest-labs/flux.1-schnell','google/gemini-nano-banana-2.1'],mock:['local']}[imageProvider]||[];
- const ttsModelPresets={groq:['canopylabs/orpheus-v1-english'],openai:['gpt-4o-mini-tts'],gemini:['gemini-3.8-flash-tts','gemini-3.8-flash-lite-tts'],mock:['local']}[ttsProvider]||[];
- const ttsVoicePresets={gemini:['Kore','Zephyr','Puck','Charon','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat']}[ttsProvider]||[];
+ const ttsModelPresets={azure:['neural'],google:['wavenet','standard','chirp3-hd'],elevenlabs:['eleven_multilingual_v2','eleven_flash_v2_5','eleven_v3'],aiawaaz:['mcp'],groq:['canopylabs/orpheus-v1-english'],openai:['gpt-4o-mini-tts'],gemini:['gemini-3.8-flash-tts','gemini-3.8-flash-lite-tts'],mock:['local']}[ttsProvider]||[];
+ const ttsVoicePresets={azure:['hi-IN-SwaraNeural','hi-IN-MadhurNeural','hi-IN-AaravNeural','hi-IN-AnanyaNeural','hi-IN-KavyaNeural','hi-IN-KunalNeural','hi-IN-RehaanNeural','en-IN-NeerjaNeural','en-IN-PrabhatNeural'],google:['hi-IN-Wavenet-A','hi-IN-Wavenet-B','hi-IN-Wavenet-C','hi-IN-Wavenet-D','hi-IN-Standard-A','hi-IN-Standard-B','hi-IN-Standard-C','hi-IN-Standard-D','hi-IN-Neural2-A','hi-IN-Neural2-B','hi-IN-Chirp3-HD-Kore','hi-IN-Chirp3-HD-Puck'],gemini:['Kore','Zephyr','Puck','Charon','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat']}[ttsProvider]||[];
  // Older versions marked every new profile active. The default is the most recently
  // updated active profile (the server sorts /series that way and uses the same rule).
  const defaultSeries=seriesList.find(x=>x.active);const defaultId=defaultSeries?String(defaultSeries._id):'';
@@ -502,18 +628,54 @@ function App(){
  const setVD=(k,v)=>setAi(x=>({...x,visualDirector:{...x.visualDirector,[k]:v}}));
  const setF=(k,v)=>setSeriesForm(f=>({...f,[k]:v}));
  const setU=(k,v)=>setSeriesForm(f=>({...f,upload:{...f.upload,[k]:v}}));
+ const setAP=(k,v)=>setSeriesForm(f=>({...f,autopilot:{...f.autopilot,[k]:v}}));
+ const [apStatus,setApStatus]=useState(null),[apMsg,setApMsg]=useState('');
+ async function loadAutopilot(id=selectedSeriesId){if(!id)return;try{setApStatus(await apiJson(`/autopilot/${id}`,{},0));}catch(e){setApMsg(e.message)}}
+ useEffect(()=>{setApStatus(null);setApMsg('');if(profileSection!=='autopilot'||!selectedSeriesId)return;loadAutopilot();const t=setInterval(()=>loadAutopilot(),30000);return()=>clearInterval(t);},[profileSection,selectedSeriesId]);
+ async function autopilotRunNow(){if(!window.confirm('Make one automatic video now? If it passes the checks it is uploaded to YouTube as soon as it is ready, without review.'))return;try{await apiJson(`/autopilot/${selectedSeriesId}/run-now`,{method:'POST'},0);setApMsg('Started. It appears below and on the Create page.');await loadAutopilot();await refresh();}catch(e){setApMsg(e.message)}}
  // Per-profile YouTube connection (saved separately from the profile: the secret is write-only).
  const ytAcc={...EMPTY_YT_ACCOUNT,...(editSeries?.youtubeAccount||{})};
  const ytAccKey=`${selectedSeriesId}|${JSON.stringify(editSeries?.youtubeAccount||{})}`;
  useEffect(()=>{setYtForm({clientId:ytAcc.clientId||'',clientSecret:'',redirectUri:ytAcc.redirectUri||ytAcc.defaultRedirectUri||'',publishEnabled:Boolean(ytAcc.publishEnabled)});},[ytAccKey]);
- useEffect(()=>{setYtMsg('');},[selectedSeriesId]);
+ useEffect(()=>{setYtMsg('');setTgMsg('');setTgFound(null);setTgManual('');},[selectedSeriesId]);
+ // Per-profile Telegram notifications (token is write-only, saved separately).
+ const tgAcc={...EMPTY_TG,...(editSeries?.telegram||{})};
+ const tgKey=`${selectedSeriesId}|${JSON.stringify(editSeries?.telegram||{})}`;
+ useEffect(()=>{setTgForm({botToken:'',enabled:Boolean(tgAcc.enabled),commandsEnabled:Boolean(tgAcc.commandsEnabled),chats:tgAcc.chats||[],events:{...tgAcc.events},sendVideoOnReady:tgAcc.sendVideoOnReady!==false});},[tgKey]);
+ const tgDirty=Boolean(selectedSeriesId)&&(Boolean(tgForm.botToken.trim())||tgForm.enabled!==Boolean(tgAcc.enabled)||tgForm.commandsEnabled!==Boolean(tgAcc.commandsEnabled)||tgForm.sendVideoOnReady!==(tgAcc.sendVideoOnReady!==false)||JSON.stringify(tgForm.chats)!==JSON.stringify(tgAcc.chats||[])||JSON.stringify(tgForm.events)!==JSON.stringify(tgAcc.events||{}));
+ const tgSources=seriesList.filter(x=>String(x._id)!==String(selectedSeriesId)&&x.telegram?.hasToken);
+ async function tgCall(path,opts,okMsg){setTgBusy(true);setTgMsg('');try{const j=await apiJson(`/telegram/${selectedSeriesId}${path}`,opts,0);if(okMsg)setTgMsg(typeof okMsg==='function'?okMsg(j):okMsg);return j;}catch(e){setTgMsg(e.message);return null;}finally{setTgBusy(false)}}
+ async function saveTelegram(){const j=await tgCall('',json('PUT',{...tgForm,botToken:tgForm.botToken.trim()||undefined}),j=>`Telegram settings saved${j.botUsername?` for @${j.botUsername}`:''}.`);if(j)await loadSeries();}
+ async function clearTelegramToken(){if(!window.confirm('Remove the bot token from this profile? Notifications stop until you add one again.'))return;const j=await tgCall('',json('PUT',{clearToken:true}),'Bot token removed.');if(j)await loadSeries();}
+ async function copyTelegram(){if(!tgCopyFrom)return;const j=await tgCall(`/copy-from/${tgCopyFrom}`,{method:'POST'},'Bot and chats copied. Choose events, turn it on and save.');if(j){setTgCopyFrom('');await loadSeries();}}
+ async function findTelegramChats(){const j=await tgCall('/detect-chats',{method:'POST'});if(j){setTgFound(j.chats||[]);if(!j.chats?.length)setTgMsg('No chats found. Open your bot in Telegram and send it any message (or add it to your group), then try again.');}}
+ async function testTelegram(){await tgCall('/test',{method:'POST'},j=>{const r=j.results||[];const bad=r.filter(x=>!x.ok);return bad.length?`Test failed for ${bad.map(x=>`${x.chatId} (${x.error})`).join(', ')}`:`Test message sent to ${r.length} chat${r.length===1?'':'s'}.`;});await loadSeries();}
+ const addTgChat=c=>setTgForm(f=>f.chats.some(x=>x.chatId===c.chatId)?f:{...f,chats:[...f.chats,c]});
  const ytDirty=Boolean(selectedSeriesId)&&(ytForm.clientId.trim()!==(ytAcc.clientId||'')||Boolean(ytForm.clientSecret.trim())||ytForm.redirectUri.trim()!==(ytAcc.redirectUri||'')||ytForm.publishEnabled!==Boolean(ytAcc.publishEnabled));
  async function saveYtAccount(){if(!selectedSeriesId)return;setYtBusy(true);setYtMsg('');try{const j=await apiJson(`/youtube/account/${selectedSeriesId}`,json('PUT',{clientId:ytForm.clientId,clientSecret:ytForm.clientSecret,redirectUri:ytForm.redirectUri,publishEnabled:ytForm.publishEnabled}),0);await loadSeries();setYtMsg(j.connected?'YouTube settings saved.':j.configured?'Saved. Now click "Connect channel" and sign in with this channel\'s Google account.':'Saved.');}catch(e){setYtMsg(`Not saved: ${e.message}`)}finally{setYtBusy(false)}}
  function connectYt(){if(!selectedSeriesId)return;setYtMsg('Finish signing in in the pop-up window…');window.open(`${API}/youtube/auth/${selectedSeriesId}`,'youtube-auth','width=520,height=700');}
  async function disconnectYt(){if(!selectedSeriesId||!window.confirm(`Disconnect "${ytAcc.channelTitle||'this channel'}" from the profile? Uploads will stop until you connect again.`))return;setYtBusy(true);try{await apiJson(`/youtube/account/${selectedSeriesId}/disconnect`,{method:'POST'},0);await loadSeries();setYtMsg('Channel disconnected.');}catch(e){setYtMsg(`Disconnect failed: ${e.message}`)}finally{setYtBusy(false)}}
  useEffect(()=>{const onMsg=e=>{if(e?.data?.type==='YOUTUBE_CONNECTED'){loadSeries();setYtMsg('YouTube channel connected.');}else if(e?.data?.type==='YOUTUBE_CONNECT_FAILED'){loadSeries();setYtMsg('YouTube connection failed — see the pop-up for details.');}};window.addEventListener('message',onMsg);return()=>window.removeEventListener('message',onMsg);},[]);
- const hindiTtsWarning=genProfile.language==='Hindi'&&ttsProvider==='groq';
- const rowHandlers={onOpen:(id,t)=>openVideo(id,t),onApprove:approve,onCancel:cancelVideo,onRetry:retryVideo,onDelete:deleteVideo};
+ const hindiTtsWarning=genProfile.language==='Hindi'&&ai?.media?.ttsHindi?.[ttsProvider]===false;
+ // Trending topic ideas for a profile (Google Trends + YouTube trending, chosen by the AI to fit the channel).
+ async function loadTrendIdeas(seriesId){if(!seriesId)return;setTrendBusy(true);setTrendMsg('');setTrendIdeas(null);try{const j=await apiJson(`/trends/${seriesId}?count=6`,{},0);setTrendIdeas(j);if(!j.ideas?.length)setTrendMsg('No trending topic fits this channel right now.');}catch(e){setTrendMsg(e.message)}finally{setTrendBusy(false)}}
+ const NEW_TTS=['aiawaaz','azure','google','elevenlabs'];
+ // Script AI keys (Settings → AI providers → "API keys for script providers").
+ const textInfo=ai?.providers?.[textKeyProvider]||{};
+ useEffect(()=>{setTextKeyForm({key:'',accountId:textInfo.accountId||'',baseUrl:textInfo.baseUrl||'',model:textInfo.model||''});},[textKeyProvider,JSON.stringify(textInfo)]);
+ async function loadTextModels(){const p=textKeyProvider;setTextModelList({provider:p,models:[],msg:'Loading models…'});try{const j=await apiJson(`/ai/text-models/${p}`,{},0);setTextModelList({provider:p,models:j.models||[],msg:(j.models||[]).length?`${j.models.length} models available to your key. Pick one, then Save.`:'No chat models found for this key.'});}catch(e){const old=/Cannot GET|404|not found/i.test(e.message);setTextModelList({provider:p,models:[],msg:old?'⚠ The backend is still running the previous version — restart the app (stop-app.bat, then start-app.bat) and try again.':`⚠ ${e.message}`});setAiMsg(old?'Restart the app to load models (the backend is running the previous version).':`Could not load models: ${e.message}`);}}
+ const priorityOrder=ai?.textPriority?.order||[];
+ const usableOrder=priorityOrder.filter(id=>providers?.[id]?.configured);
+ const otherProviders=Object.keys(ai?.providers||{}).filter(id=>!priorityOrder.includes(id));
+ async function saveMediaPriority(type,body){setAiBusy(true);setAiMsg('');try{const j=await apiJson('/ai/media-priority',json('PUT',{type,...body}),0);setAi(j);}catch(e){setAiMsg(/Cannot PUT|404/i.test(e.message)?'Restart the app to use the priority list (the backend is running the previous version).':e.message)}finally{setAiBusy(false)}}
+ async function saveTextPriority(body){setAiBusy(true);setAiMsg('');try{const j=await apiJson('/ai/text-priority',json('PUT',body),0);setAi(j);setAiMsg(body.order?'Order saved.':(body.fallbackEnabled?'Backup providers switched on.':'Backup providers switched off — only the first provider is used.'));}catch(e){setAiMsg(/Cannot PUT|404/i.test(e.message)?'Restart the app to use the priority list (the backend is running the previous version).':e.message)}finally{setAiBusy(false)}}
+ function moveProvider(id,dir){const o=[...priorityOrder];const i=o.indexOf(id),j=i+dir;if(i<0||j<0||j>=o.length)return;[o[i],o[j]]=[o[j],o[i]];saveTextPriority({order:o});}
+ function openTextKey(id){setProviderTab('script');setTextKeyProvider(id);setTimeout(()=>document.getElementById('text-keys')?.scrollIntoView({behavior:'smooth',block:'start'}),50);}
+ async function saveTextKey(clear=false){const p=textKeyProvider;setAiBusy(true);setAiMsg('');try{let j=await apiJson('/ai/text-keys',json('PUT',clear?{provider:p,clear:true}:{provider:p,key:textKeyForm.key,...(textInfo.needsAccountId?{accountId:textKeyForm.accountId}:{}),...(textInfo.customBaseUrl?{baseUrl:textKeyForm.baseUrl}:{})}),0);if(!clear&&textKeyForm.model.trim()&&textKeyForm.model.trim()!==textInfo.model)j=await apiJson('/ai/config',json('PUT',{text:{models:{[p]:textKeyForm.model.trim()}}}),0);setAi(j);setAiMsg(clear?`${textInfo.name} key removed.`:`${textInfo.name} saved. Click “Test” to check it.`);}catch(e){setAiMsg(`Not saved: ${e.message}`)}finally{setAiBusy(false)}}
+ useEffect(()=>{setTtsKeyForm({key:'',region:ai?.media?.ttsKeys?.azure?.region||'',url:ai?.media?.ttsKeys?.aiawaaz?.url||'',tool:ai?.media?.ttsKeys?.aiawaaz?.tool||'',enhance:Boolean(ai?.media?.ttsKeys?.aiawaaz?.enhance)});setTtsVoiceList(null);setTtsVoiceMsg('');},[keyProvider,JSON.stringify(ai?.media?.ttsKeys||{})]);
+ async function saveTtsKey(clear=false){const p=keyProvider;const body={[p]:clear?{clear:true}:{key:ttsKeyForm.key,...(p==='azure'?{region:ttsKeyForm.region}:{}),...(p==='aiawaaz'?{url:ttsKeyForm.url,tool:ttsKeyForm.tool,enhance:ttsKeyForm.enhance}:{})}};setAiBusy(true);setAiMsg('');try{const j=await apiJson('/ai/tts-keys',json('PUT',body),0);setAi(j);setAiMsg(clear?'Key removed.':'Saved. Use “Test” to check it.');}catch(e){setAiMsg(`Not saved: ${e.message}`)}finally{setAiBusy(false)}}
+ async function loadTtsVoices(){setTtsVoiceMsg('Loading…');setTtsVoiceList(null);try{const j=await apiJson(`/ai/tts-voices/${keyProvider}?language=hi`,{},0);setTtsVoiceList(j);setTtsVoiceMsg(keyProvider==='aiawaaz'?`Connected. Speech tool: ${j.ttsTool||'not found'}${j.voices?.length?` · ${j.voices.length} voices`:''}.`:`${(j.voices||[]).length} Hindi voices found.`);}catch(e){setTtsVoiceMsg(e.message)}}
+ const rowHandlers={onRender:renderVideo,onOpen:(id,t)=>openVideo(id,t),onApprove:approve,onCancel:cancelVideo,onRetry:retryVideo,onDelete:deleteVideo};
  const byProfile=stats?.byProfile||{};
  // Profile filter chips: every saved profile, plus archived/deleted profiles that still have videos.
  const profileChips=[{id:'ALL',name:'All profiles',total:counts.total||0},...seriesList.map(x=>({id:String(x._id),name:x.name,total:byProfile[String(x._id)]?.total||0})),...Object.entries(byProfile).filter(([id])=>id!=='none'&&!seriesList.some(x=>String(x._id)===id)).map(([id,r])=>({id,name:r.name,total:r.total,archived:true})),...(byProfile.none?[{id:'none',name:'No profile',total:byProfile.none.total}]:[])];
@@ -521,12 +683,15 @@ function App(){
  const page=NAV.find(n=>n[0]===tab)||NAV[0];
  const awaiting=counts.AWAITING_APPROVAL||0;
 
+ if(!auth.checked)return <div className="loginPage"><div className="loginCard"><span className="spinner"/> Connecting…</div></div>;
+ if(auth.required&&!auth.loggedIn)return <LoginScreen locked={auth.locked} onLogin={()=>{setAuth(a=>({...a,loggedIn:true}));checkBackend();refresh();refreshStats();refreshActive();loadAI();loadSeries(true);}}/>;
  return <div className="app">
   <aside className="sidebar">
-   <div className="brand"><div className="logo">▶</div><div><b>YouTube AI Agent</b><small>Channel Studio</small></div></div>
+   <div className="brand"><div className="logo">AI</div><div><b>AI Video Manager</b><small>Channel Studio</small></div></div>
    <nav>{NAV.map(([id,name])=><button key={id} className={`navItem ${tab===id?'active':''}`} onClick={()=>setTab(id)}><Icon name={id}/><span>{name}</span>{id==='videos'&&awaiting>0&&<em className="navBadge">{awaiting}</em>}</button>)}</nav>
    <div className="sideFooter">
      <div className={`backendPill ${backendStatus}`}><i/>{backendStatus==='online'?'Backend online':backendStatus==='checking'?'Connecting…':'Backend offline'}</div>
+     {auth.required&&<button className="ghost small logoutBtn" onClick={logout}>Sign out{auth.username?` (${auth.username})`:''}</button>}
      <small className="muted">Default profile</small>
      <b className="sideProfile">{defaultSeries?.name||'None yet'}</b>
    </div>
@@ -536,6 +701,7 @@ function App(){
      <div className="topActions">{tab!=='create'&&<button onClick={()=>setTab('create')} disabled={busy}>{busy?'Generating…':'+ New video'}</button>}</div>
    </header>
    {backendStatus==='offline'&&<div className="banner warn"><div><strong>Backend API is offline</strong><small>Expected at 127.0.0.1:4000 · retrying automatically.</small></div><button className="ghost" onClick={()=>{checkBackend();refresh();refreshStats()}}>Retry now</button></div>}
+   {restartNeeded&&<div className="banner warn restartBanner"><span>🔄 <b>Updates are installed but not running yet.</b> Restart the app to use them: run <code>stop-app.bat</code>, then <code>start-app.bat</code>. (Wait until no video is being made.)</span></div>}
    {error&&<div className="banner error"><span>{error}</span><button className="ghost" onClick={()=>setError('')}>Dismiss</button></div>}
 
    {tab==='create'&&<div className="createGrid">
@@ -545,17 +711,21 @@ function App(){
           <div className="profilePicker">{seriesList.map(s=><button key={s._id} className={`profileOption ${String(s._id)===String(genSeriesId)?'selected':''}`} onClick={()=>setGenSeriesId(String(s._id))}><b>{s.name}</b><small>{s.niche||'—'} · {formFromSeries(s).language}</small>{String(s._id)===defaultId&&<em>Default</em>}</button>)}</div>
           <ProfileChips form={genProfile}/>
           <p className="muted small">This video uses the <b>saved</b> profile exactly. To change language, format, length or hook, edit the profile.</p>
-          {hindiTtsWarning&&<div className="banner warn inline">This profile is Hindi but the narration provider is Groq Orpheus (English only). Choose Gemini or OpenAI TTS in Settings → Providers.</div>}
+          {hindiTtsWarning&&<div className="banner warn inline">This profile is Hindi but the narration provider ({ai?.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider}) is English only. Choose a 🇮🇳 Hindi provider (Azure, Google Cloud, AI Awaaz, Gemini…) in Settings → Providers.</div>}
         </>}
       </Card>
       <Card eyebrow="STEP 2" title="Topic (optional)">
-        <textarea className="topicBox" rows="3" value={topicInput} onChange={e=>setTopicInput(e.target.value)} placeholder="Describe what this video should be about… Leave empty to use the profile's researched topic rotation."/>
+        <textarea className="topicBox" rows="3" value={topicInput} onChange={e=>setTopicInput(e.target.value)} placeholder={`Describe what this video should be about… Leave empty to use the profile's topic source (${({'queue-then-trending':'topic queue, then today\'s trends','trending':'today\'s trends','queue':'topic queue, then AI choice'})[genSeries?.channelProfile?.content?.topicSource||'queue-then-trending']}).`}/>
+        <div className="row wrap"><button className="ghost" disabled={!genSeriesId||trendBusy} onClick={()=>loadTrendIdeas(genSeriesId)}>{trendBusy?'Checking trends…':'✨ Trending topic ideas'}</button></div>
+        {trendMsg&&<div className="banner info inline">{trendMsg}</div>}
+        {trendIdeas?.ideas?.length>0&&<div className="trendIdeas">{trendIdeas.ideas.map((t,i)=><button key={i} className="trendIdea" onClick={()=>setTopicInput(t.topic)}><b>{t.topic}</b><small>{t.trend&&t.trend!=='evergreen'?`📈 ${t.trend}`:'🌿 evergreen'}{t.angle?` · ${t.angle}`:''}</small></button>)}<small className="muted">Trends for {trendIdeas.region} from Google Trends{trendIdeas.trends?.youtube?.length?' and YouTube trending':''}. Click one to use it.{trendIdeas.errors?.length?` (${trendIdeas.errors.join('; ')})`:''}</small></div>}
         {(genSeries?.topicIdeas||[]).length>0&&<div className="topicIdeas"><small className="muted">Ideas from channel research</small><div>{genSeries.topicIdeas.slice(0,8).map((x,i)=><button key={i} className="ghost chipBtn" onClick={()=>setTopicInput(x)}>{x}</button>)}</div></div>}
-        <div className="generateBar"><button className="primaryLg" onClick={generate} disabled={busy||!genSeriesId||backendStatus==='offline'}>{busy?'Generating…':'Generate video'}</button><span className="muted small">{genSeries?`${genSeries.name} · ${genProfile.durationSec}s ${genProfile.contentFormat} in ${genProfile.language}`:'Choose a profile first'}</span></div>
+        <div className="generateBar"><button className="primaryLg" onClick={generate} disabled={busy||!genSeriesId||backendStatus==='offline'}>{busy?'Generating…':'Generate video'}</button>{busy&&job&&['QUEUED','RUNNING'].includes(job.status)?<button className="ghost liveJump" onClick={()=>document.querySelector('.jobCard')?.scrollIntoView({behavior:'smooth',block:'start'})}><span className="spinner" aria-hidden="true"/>{jobTitle(job)} · {pct(job)}% — see progress ↓</button>:null}<span className="muted small">{genSeries?`${genSeries.name} · ${genProfile.durationSec}s ${genProfile.contentFormat} in ${genProfile.language}`:'Choose a profile first'}</span></div>
         {notice&&<div className="banner ok inline">{notice}</div>}
       </Card>
-      {job&&<Card eyebrow="LIVE" title={label(job.step||job.status)} actions={<b className="bigPct">{pct(job)}%</b>} className="jobCard">
-        <div className="bar"><i style={{width:`${pct(job)}%`}}/></div>
+      {job&&<Card eyebrow="LIVE" title={jobTitle(job)} actions={<b className="bigPct">{pct(job)}%</b>} className="jobCard">
+        <div className={`bar ${['QUEUED','RUNNING'].includes(job.status)?'moving':''}`}><i style={{width:`${Math.max(3,pct(job))}%`}}/></div>
+        <LiveActivity job={job}/>
         <JobStepProgress job={job}/>
         <div className="log">{(job.logs||[]).slice(-10).map((x,i)=><div key={i} className={`logLine ${x.level||''}`}><em>{x.at?new Date(x.at).toLocaleTimeString():''}</em><span>{x.message}</span></div>)}</div>
         {job.videoId&&<button className="ghost" onClick={()=>openVideo(job.videoId?._id||job.videoId)}>Open video details</button>}
@@ -576,6 +746,7 @@ function App(){
    </div>}
 
    {tab==='videos'&&<div className="stack">
+    {activeJobs.length>0&&<div className="banner info activeJobsBanner"><span>⏳ {activeJobs.length===1?'1 video is being made':`${activeJobs.length} videos are being made`}: {activeJobs.map(j=>`${j.video?.title||j.topic||j.profileName||'new video'} — ${jobTitle(j)} ${pct(j)}%`).join(' · ')}</span><button className="ghost" onClick={()=>setTab('create')}>Show progress</button></div>}
      <div className="statGrid wide">{statCard('Total','ALL')}{statCard('Active jobs','RUNNING')}{statCard('Awaiting approval','AWAITING_APPROVAL','accent')}{statCard('Published','PUBLISHED','good')}{statCard('Failed','FAILED','bad')}{statCard('Cancelled','CANCELLED')}</div>
      <Card actions={<button className="ghost" onClick={()=>{refresh();refreshStats()}}>Refresh</button>} title="All videos">
        <div className="profileFilter"><small className="eyebrow">PROFILE</small><div className="filterBar">{profileChips.map(p=><button key={p.id} className={profileFilter===p.id?'filterActive':'ghost'} onClick={()=>pickProfileFilter(p.id)} title={p.archived?'Archived or deleted profile':''}>{p.name}{p.archived?' (archived)':''} <span className="count">{p.total}</span></button>)}</div></div>
@@ -593,7 +764,7 @@ function App(){
      </div>
      <div className="stack">
        <Card eyebrow={selectedSeriesId?'EDIT PROFILE':'NEW PROFILE'} title={seriesForm.name||'Untitled profile'} actions={<>{profileDirty&&<span className="dirty">Unsaved changes</span>}{selectedSeriesId&&(String(selectedSeriesId)!==defaultId||extraActive)&&<button className="ghost" onClick={()=>activateSeries()}>Set as default</button>}{selectedSeriesId&&<button className="ghost" onClick={duplicateProfile}>Duplicate</button>}{selectedSeriesId&&<button className="danger ghost" onClick={deleteProfile}>Delete</button>}<button onClick={saveSeries} disabled={!profileDirty&&Boolean(selectedSeriesId)}>Save profile</button></>}>
-         <div className="profileTabs">{PROFILE_SECTIONS.map(([id,name])=><button key={id} className={profileSection===id?'active':''} onClick={()=>setProfileSection(id)}>{name}{id==='youtube'&&selectedSeriesId&&<span className={`miniDot ${ytAcc.connected?'ok':''}`}/>}</button>)}</div>
+         <div className="profileTabs">{PROFILE_SECTIONS.map(([id,name])=><button key={id} className={profileSection===id?'active':''} onClick={()=>setProfileSection(id)}>{name}{id==='youtube'&&selectedSeriesId&&<span className={`miniDot ${ytAcc.connected?'ok':''}`}/>}{id==='autopilot'&&selectedSeriesId&&<span className={`miniDot ${editSeries?.autopilot?.enabled?'ok':''}`}/>}{id==='telegram'&&selectedSeriesId&&<span className={`miniDot ${tgAcc.enabled&&tgAcc.hasToken&&tgAcc.chats.length?'ok':''}`}/>}</button>)}</div>
          {profileSection==='channel'&&<>
          <div className="formSection"><h4>Identity</h4><div className="formGrid">
            <Field label="Channel name"><input value={seriesForm.name} onChange={e=>setF('name',e.target.value)} placeholder="e.g. Motivation Shorts Hindi"/></Field>
@@ -602,7 +773,7 @@ function App(){
            <Field label="Target audience"><input value={seriesForm.targetAge} onChange={e=>setF('targetAge',e.target.value)} placeholder="e.g. Young adults 18–30"/></Field>
          </div></div>
          <div className="formSection"><h4>Every video</h4><p className="muted small">These are used for every generated video — no per-video overrides.</p><div className="formGrid four">
-           <Field label="Language" hint={seriesForm.language==='Hindi'?(ttsProvider==='groq'?'⚠ Your narration provider (Groq Orpheus) is English-only — switch to Gemini or OpenAI TTS in Settings.':'Narration: '+ttsProvider+' (supports Hindi).'):''}><select value={seriesForm.language} onChange={e=>setF('language',e.target.value)}><option value="English">English</option><option value="Hindi">Hindi (हिन्दी)</option></select></Field>
+           <Field label="Language" hint={seriesForm.language==='Hindi'?(ai?.media?.ttsHindi?.[ttsProvider]===false?`⚠ Your narration provider (${ai?.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider}) is English-only — choose a 🇮🇳 Hindi provider in Settings → Providers.`:`Narration: ${ai?.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider} (speaks Hindi)`):''}><select value={seriesForm.language} onChange={e=>setF('language',e.target.value)}><option value="English">English</option><option value="Hindi">Hindi (हिन्दी)</option></select></Field>
            <Field label="Format"><select value={seriesForm.contentFormat} onChange={e=>setF('contentFormat',e.target.value)}>{[...new Set([seriesForm.contentFormat,...FORMAT_OPTIONS])].filter(Boolean).map(x=><option key={x}>{x}</option>)}</select></Field>
            <Field label="Length"><select value={seriesForm.durationSec} onChange={e=>setF('durationSec',Number(e.target.value))}>{[...new Set([Number(seriesForm.durationSec),...DURATION_OPTIONS])].sort((a,b)=>a-b).map(x=><option key={x} value={x}>{x} seconds</option>)}</select></Field>
            <Field label="Hook style"><select value={seriesForm.hookStyle} onChange={e=>setF('hookStyle',e.target.value)}>{HOOK_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></Field>
@@ -619,6 +790,8 @@ function App(){
            <Field label="Call to action" hint="Spoken at the end of each video. Leave blank to let the AI decide." wide><input value={seriesForm.callToAction} onChange={e=>setF('callToAction',e.target.value)} placeholder="e.g. Follow for a new story every day"/></Field>
            <Field label="Creator rules" hint="One rule per line."><textarea rows="3" value={seriesForm.rules} onChange={e=>setF('rules',e.target.value)} placeholder={'Always end with a moral\nNo slang'}/></Field>
            <Field label="Never mention" hint="Topics or words to avoid, one per line."><textarea rows="3" value={seriesForm.avoidTopics} onChange={e=>setF('avoidTopics',e.target.value)} placeholder={'politics\ngraphic violence'}/></Field>
+           <Field label="When no topic is typed" hint="Used by Create, Telegram /new and Autopilot."><select value={seriesForm.topicSource} onChange={e=>setF('topicSource',e.target.value)}><option value="queue-then-trending">Topic queue first, then today's trends</option><option value="trending">Always today's trends</option><option value="queue">Topic queue first, then AI choice (no trends)</option></select></Field>
+           <Field label="Trends from" hint="Google Trends and YouTube trending region."><select value={seriesForm.trendRegion} onChange={e=>setF('trendRegion',e.target.value)}>{[['IN','India'],['US','United States'],['GB','United Kingdom'],['PK','Pakistan'],['BD','Bangladesh'],['NP','Nepal'],['AE','UAE'],['CA','Canada'],['AU','Australia']].map(([c,n])=><option key={c} value={c}>{n}</option>)}</select></Field>
            <Field label="Topic queue" hint={`Used in order when you generate without typing a topic. One per line.${splitLines(seriesForm.topicIdeas).length?` ${splitLines(seriesForm.topicIdeas).length} queued.`:''}`} wide><textarea rows="4" value={seriesForm.topicIdeas} onChange={e=>setF('topicIdeas',e.target.value)} placeholder={'The story of the honest woodcutter\nWhy Kalyug began'}/></Field>
          </div></div>
          </>}
@@ -674,6 +847,71 @@ function App(){
            </div>
          </div>
          </>}
+         {profileSection==='autopilot'&&<>
+         <div className="formSection"><h4>Autopilot — create & upload automatically</h4>
+           <p className="muted small">At each time below, a video is made from this profile (topic queue first, otherwise the AI picks a topic), checked automatically, approved and uploaded to this profile's YouTube channel — scheduled to go public at that time. Fully automatic: videos that pass the checks are published without your review.</p>
+           {selectedSeriesId&&apStatus&&<div className="apChecks">
+             <div className={apStatus.youtube.ready?'ok':'bad'}>{apStatus.youtube.ready?'✓ YouTube connected and uploads allowed':`✗ YouTube not ready — ${apStatus.youtube.problems.join(' ')}`}</div>
+             <div className={apStatus.telegram.on?'ok':'warn'}>{apStatus.telegram.on?'✓ Telegram alerts on':'! Recommended: turn on Telegram notifications to hear about problems'}</div>
+           </div>}
+           <Toggle checked={seriesForm.autopilot.enabled} onChange={v=>setAP('enabled',v)} label="Autopilot on" hint="Saved with Save profile. Runs while this app is running."/>
+           <div className="formGrid">
+             <Field label={`Publish times (${seriesForm.upload.timezone})`} hint="Lunchtime and evening are typical peak Shorts viewing times. Time zone is set in the YouTube tab." wide>
+               <div className="timeList">{seriesForm.autopilot.times.map((t,i)=><span key={i} className="timeItem"><input type="time" value={t} onChange={e=>setAP('times',seriesForm.autopilot.times.map((x,j)=>j===i?e.target.value:x))}/>{seriesForm.autopilot.times.length>1&&<button className="ghost small" onClick={()=>setAP('times',seriesForm.autopilot.times.filter((_,j)=>j!==i))} aria-label="Remove time">✕</button>}</span>)}{seriesForm.autopilot.times.length<4&&<button className="ghost small" onClick={()=>setAP('times',[...seriesForm.autopilot.times,'21:00'])}>+ Add time</button>}</div>
+             </Field>
+             <Field label="Days" wide><div className="dayChips">{DAY_NAMES.map((d,i)=><button key={d} className={seriesForm.autopilot.days.includes(i)?'filterActive':'ghost'} onClick={()=>{const on=seriesForm.autopilot.days.includes(i);const next=on?seriesForm.autopilot.days.filter(x=>x!==i):[...seriesForm.autopilot.days,i].sort();if(next.length)setAP('days',next);}}>{d}</button>)}</div></Field>
+             <Field label="Start making the video" hint="Before each time, so it is ready and scheduled in advance."><select value={seriesForm.autopilot.leadMinutes} onChange={e=>setAP('leadMinutes',Number(e.target.value))}>{[60,90,120,180,240].map(m=><option key={m} value={m}>{m>=120?`${m/60} hours`:`${m} minutes`} before</option>)}</select></Field>
+             <Field label="Visibility" hint="Public videos are scheduled to go public exactly at the time."><select value={seriesForm.autopilot.visibility} onChange={e=>setAP('visibility',e.target.value)}><option value="public">Public (scheduled)</option><option value="unlisted">Unlisted</option><option value="private">Private</option></select></Field>
+             <Field label="Minimum QA score to publish" hint="Below this the video waits for you instead."><input type="number" min="0" max="100" value={seriesForm.autopilot.minQaScore} onChange={e=>setAP('minQaScore',Number(e.target.value))}/></Field>
+           </div>
+           <Toggle checked={seriesForm.autopilot.blockStaleImages} onChange={v=>setAP('blockStaleImages',v)} label="Don't publish if an image may not match the narration" hint="The video waits for your review instead."/>
+           {selectedSeriesId&&apStatus&&<>
+             <h5 className="subHead">Next times</h5>
+             <div className="tagList">{apStatus.settings.enabled?apStatus.nextSlots.map(d=><span key={d}>{new Date(d).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span>):<span>Autopilot is off{seriesForm.autopilot.enabled?' (save the profile to turn it on)':''}</span>}</div>
+             <h5 className="subHead">Recent automatic videos</h5>
+             {apStatus.runs.length===0?<p className="muted small">None yet.</p>:<div className="apRuns">{apStatus.runs.map(r=><div key={r._id} className="apRun">
+               <div><b>{new Date(r.slotAt).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</b>{r.manual&&<small className="muted"> · run now</small>}</div>
+               <span className={`pill run-${r.status.toLowerCase()}`}>{RUN_LABEL[r.status]||r.status}</span>
+               <small className="muted apLog">{r.error||r.log?.at(-1)?.message||''}</small>
+               <div className="row">{r.videoId&&<button className="ghost small" onClick={()=>openVideo(String(r.videoId))}>Video</button>}{r.youtubeVideoId&&<a className="btnLink" href={`https://youtu.be/${r.youtubeVideoId}`} target="_blank" rel="noreferrer">YouTube</a>}</div>
+             </div>)}</div>}
+             <div className="row wrap"><button className="ghost" onClick={autopilotRunNow} disabled={!apStatus.youtube.ready||profileDirty}>Run once now</button><button className="ghost" onClick={()=>loadAutopilot()}>Refresh</button></div>
+           </>}
+           {!selectedSeriesId&&<p className="muted small">Save this profile first.</p>}
+           {apMsg&&<div className="banner info inline">{apMsg}</div>}
+         </div>
+         </>}
+         {profileSection==='telegram'&&<>
+         <div className="formSection"><h4>Telegram notifications</h4>
+           {!selectedSeriesId?<p className="muted small">Save this profile first, then set up its Telegram notifications.</p>:<>
+           <div className={`ytStatus ${tgAcc.enabled&&tgAcc.hasToken&&tgAcc.chats.length?'ok':''}`}><span className="dot"/>{tgAcc.hasToken?<span>Bot <b>@{tgAcc.botUsername||'saved'}</b> · {tgAcc.chats.length} chat{tgAcc.chats.length===1?'':'s'} · notifications {tgAcc.enabled?'on':'off'} · commands {tgAcc.commandsEnabled?'on':'off'}{tgAcc.lastSentAt?` · last sent ${timeAgo(tgAcc.lastSentAt)}`:''}</span>:<span>Not set up. Each profile can use its own bot and chats.</span>}</div>
+           <details className="howTo"><summary>How to set up a bot</summary><ol><li>In Telegram, open <b>@BotFather</b>, send <code>/newbot</code> and follow the steps. Copy the token it gives you.</li><li>Paste the token below and click <b>Save Telegram settings</b>.</li><li>Open your new bot and send it any message — or add it to a group or channel where you want updates.</li><li>Click <b>Find my chats</b>, add the chat, turn notifications on and save. Use <b>Send test</b> to check.</li><li>To control videos from Telegram, also turn on <b>Allow commands</b> and send <code>/help</code> to the bot.</li></ol><p className="muted small">The token is stored encrypted on this computer and is never shown again or included in exports.</p></details>
+           <div className="formGrid">
+             <Field label="Bot token" hint={tgAcc.tokenUnreadable?'⚠ The saved token can no longer be read — enter it again.':tgAcc.hasToken?'Saved. Leave blank to keep it.':'From @BotFather.'}><input type="password" value={tgForm.botToken} onChange={e=>setTgForm(f=>({...f,botToken:e.target.value}))} placeholder={tgAcc.hasToken?'•••••••• saved':'123456789:AA…'} autoComplete="new-password" spellCheck={false}/></Field>
+             {tgSources.length>0&&<Field label="…or use the bot of another profile"><div className="inlineForm"><select value={tgCopyFrom} onChange={e=>setTgCopyFrom(e.target.value)}><option value="">Choose profile</option>{tgSources.map(x=><option key={x._id} value={x._id}>{x.name}{x.telegram?.botUsername?` (@${x.telegram.botUsername})`:''}</option>)}</select><button className="ghost" onClick={copyTelegram} disabled={!tgCopyFrom||tgBusy}>Copy</button></div></Field>}
+           </div>
+           <div className="toggleGrid">
+             <Toggle checked={tgForm.enabled} onChange={v=>setTgForm(f=>({...f,enabled:v}))} label="Send notifications for this profile" hint="Only videos made with this profile are reported here."/>
+             <Toggle checked={tgForm.commandsEnabled} onChange={v=>setTgForm(f=>({...f,commandsEnabled:v}))} label="Allow commands from these chats" hint="/new, /recent, /pending, /status — then tap a video to approve, upload, schedule, continue, cancel or delete."/>
+           </div>
+           {tgForm.commandsEnabled&&<div className="banner info inline">Anyone in the chats below can control this profile's videos — in a group that means every member. Delete, approve and upload always ask for confirmation in the chat. The bot runs while this app is running.</div>}
+           <h5 className="subHead">Chats</h5>
+           {tgForm.chats.length===0?<p className="muted small">No chats yet.</p>:<div className="chatList">{tgForm.chats.map(c=><div key={c.chatId} className="chatRow"><span><b>{c.title||c.chatId}</b><small className="muted"> {c.type||'chat'} · {c.chatId}</small></span><button className="danger ghost small" onClick={()=>setTgForm(f=>({...f,chats:f.chats.filter(x=>x.chatId!==c.chatId)}))}>Remove</button></div>)}</div>}
+           <div className="row wrap"><button className="ghost" onClick={findTelegramChats} disabled={tgBusy||!tgAcc.hasToken} title={tgAcc.hasToken?'':'Save the bot token first'}>Find my chats</button><input className="chatIdInput" value={tgManual} onChange={e=>setTgManual(e.target.value)} placeholder="or chat ID, e.g. -1001234567890"/><button className="ghost" disabled={!/^-?\d{3,20}$/.test(tgManual.trim())} onClick={()=>{addTgChat({chatId:tgManual.trim(),title:'',type:''});setTgManual('');}}>Add</button></div>
+           {tgFound&&tgFound.length>0&&<div className="chatList found">{tgFound.map(c=><div key={c.chatId} className="chatRow"><span><b>{c.title}</b><small className="muted"> {c.type} · {c.chatId}</small></span>{tgForm.chats.some(x=>x.chatId===c.chatId)?<small className="muted">Added</small>:<button className="ghost small" onClick={()=>addTgChat(c)}>Add</button>}</div>)}</div>}
+           <h5 className="subHead">Send updates for</h5>
+           <div className="toggleGrid">{(tgAcc.eventCatalog||[]).map(ev=><Toggle key={ev.id} checked={Boolean(tgForm.events[ev.id])} onChange={v=>setTgForm(f=>({...f,events:{...f.events,[ev.id]:v}}))} label={`${ev.icon} ${ev.label}`}/>)}
+             <Toggle checked={tgForm.sendVideoOnReady} onChange={v=>setTgForm(f=>({...f,sendVideoOnReady:v}))} label="Attach the video when it is ready" hint="Up to 50 MB (Telegram bot limit); otherwise a text message is sent."/></div>
+           <div className="row wrap">
+             <button onClick={saveTelegram} disabled={tgBusy||!tgDirty}>{tgBusy?'Working…':'Save Telegram settings'}</button>
+             <button className="ghost" onClick={testTelegram} disabled={tgBusy||tgDirty||!tgAcc.hasToken||!tgAcc.chats.length} title={tgDirty?'Save first':''}>Send test</button>
+             {tgAcc.hasToken&&<button className="danger ghost" onClick={clearTelegramToken} disabled={tgBusy}>Remove bot</button>}
+           </div>
+           {tgAcc.lastError&&<div className="videoError">Last error: {tgAcc.lastError}</div>}
+           {tgMsg&&<div className="banner info inline">{tgMsg}</div>}
+           </>}
+         </div>
+         </>}
          {researchMsg&&<div className="banner info inline">{researchMsg}</div>}
        </Card>
        {profileSection==='research'&&<Card eyebrow="CHANNEL RESEARCH" title="Learn from a YouTube channel">
@@ -705,31 +943,78 @@ function App(){
    </div>}
 
    {tab==='settings'&&<div className="settingsLayout">
-     <nav className="subNav">{[['providers','Providers'],['output','Video output'],['quality','Image quality & OCR'],['storage','Storage'],['advanced','Advanced']].map(([id,name])=><button key={id} className={settingsTab===id?'active':''} onClick={()=>setSettingsTab(id)}>{name}</button>)}</nav>
+     <nav className="subNav">{[['providers','Providers'],['output','Video output'],['quality','Image quality & OCR'],['storage','Storage'],['site','Home page'],['advanced','Advanced']].map(([id,name])=><button key={id} className={settingsTab===id?'active':''} onClick={()=>setSettingsTab(id)}>{name}</button>)}</nav>
      <div className="stack">
       {aiMsg&&<div className="banner info">{aiMsg}{aiSavedAt&&<small className="muted"> · {aiSavedAt.toLocaleTimeString()}</small>}</div>}
       {!ai&&(aiError?<div className="banner error"><span>Couldn't load settings: {aiError}. Retrying automatically…</span><button className="ghost" onClick={loadAI}>Retry now</button></div>:<p className="muted">Loading settings…</p>)}
       {ai&&settingsTab==='providers'&&<>
-        <Card eyebrow="STEP 1 · SCRIPT" title="Script AI" actions={<span className="muted small">Active: <b>{providers[ai.activeProvider]?.name||'—'}</b></span>}>
-          <div className="providerGrid">{Object.entries(providers).map(([id,p])=><div key={id} className={`providerCard ${ai.activeProvider===id?'selected':''} ${!p.configured?'disabled':''}`}><div className="providerTop"><div><strong>{p.name}</strong><small>{p.model}</small></div><span className={`statusDot ${p.configured?'online':''}`}/></div><small className="muted">{p.configured?(p.freeTier?'Free tier available':'Configured'):'API key not set'}</small><div className="row"><button disabled={!p.configured||aiBusy||ai.activeProvider===id} onClick={()=>chooseAI(id)}>{ai.activeProvider===id?'✓ Active':'Use'}</button><button className="ghost" disabled={!p.configured||aiBusy} onClick={()=>testAI(id)}>Test</button></div></div>)}</div>
+        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
+        {providerTab==='script'&&<>
+        <Card eyebrow="SCRIPT AI" title="Order of providers" actions={<span className="muted small">Main: <b>{providers[ai.activeProvider]?.name||'—'}</b></span>}>
+          <p className="muted small">Scripts, script checks, image planning, SEO and trending topics use these providers <b>from top to bottom</b>. Use ↑ ↓ to change the order.</p>
+          <PriorityList kind="text" items={providers} order={priorityOrder} fallbackEnabled={ai.textPriority?.fallbackEnabled} busy={aiBusy} results={testResults} onSave={saveTextPriority} onTest={testAI} onEdit={id=>id==='mock'?null:openTextKey(id)} editLabel={(id,p)=>id==='mock'?'—':p.configured?'Key / model':'Set up key'} describe={(id,p)=>`${p.model||''} · ${p.freeTier?'🆓 free tier':'💳 paid'}`} fallbackText="If a provider fails (busy, out of quota, retired model, bad answer), automatically try the next one"/>
+        </Card>
+        <Card eyebrow="SCRIPT AI" title="API keys & models">
+          <div className="formSection flush" id="text-keys">
+            <div className="profileTabs">{Object.entries(providers).filter(([id])=>id!=='mock').map(([id,p])=><button key={id} className={textKeyProvider===id?'active':''} onClick={()=>setTextKeyProvider(id)}>{p.name}<span className={`miniDot ${p.configured?'ok':''}`}/></button>)}</div>
+            <p className="muted small">{textInfo.note}{textInfo.keyUrl?<> <a href={textInfo.keyUrl} target="_blank" rel="noreferrer">Get a key ↗</a></>:null}</p>
+            <div className="formGrid">
+              {!textInfo.keyOptional&&<Field label="API key" hint={textInfo.hasKey?(textInfo.fromEnv?'Using the key from server/.env. Enter one to save it here instead.':'Saved (encrypted). Leave blank to keep it.'):'Stored encrypted on this computer; it is never shown again.'}><input type="password" autoComplete="new-password" value={textKeyForm.key} onChange={e=>setTextKeyForm(f=>({...f,key:e.target.value}))} placeholder={textInfo.hasKey?'•••••••• saved':'Paste key'}/></Field>}
+              {textInfo.needsAccountId&&<Field label="Cloudflare account ID" hint="Dashboard → Workers AI → “Use REST API”. The token needs “Workers AI” permission."><input value={textKeyForm.accountId} onChange={e=>setTextKeyForm(f=>({...f,accountId:e.target.value}))} placeholder="32 letters/digits"/></Field>}
+              {textInfo.customBaseUrl&&<Field label="Ollama address" hint="Install Ollama, then run “ollama pull llama3.1:8b”."><input value={textKeyForm.baseUrl} onChange={e=>setTextKeyForm(f=>({...f,baseUrl:e.target.value}))} placeholder="http://127.0.0.1:11434/v1"/></Field>}
+              <Field label="Model" hint={textModelList.provider===textKeyProvider&&textModelList.msg?textModelList.msg:(textInfo.defaultModel?`Default: ${textInfo.defaultModel}. Providers retire models — use “Load models” to see the current ones.`:'Use “Load models” to see what your key can use.')}><div className="row nowrap"><input list="text-model-list" value={textKeyForm.model} onChange={e=>setTextKeyForm(f=>({...f,model:e.target.value}))} placeholder={textInfo.defaultModel||'model id'}/><button type="button" className="ghost" disabled={aiBusy||!textInfo.configured} onClick={loadTextModels}>Load models</button></div><datalist id="text-model-list">{(textModelList.provider===textKeyProvider?textModelList.models:[]).map(m=><option key={m} value={m}/>)}</datalist>{textModelList.provider===textKeyProvider&&textModelList.models.length>0&&<select className="modelPick" value="" onChange={e=>e.target.value&&setTextKeyForm(f=>({...f,model:e.target.value}))}><option value="">Choose from {textModelList.models.length} models…</option>{textModelList.models.map(m=><option key={m} value={m}>{m}{m===textInfo.model?' (current)':''}</option>)}</select>}</Field>
+            </div>
+            <div className="row wrap"><button onClick={()=>saveTextKey(false)} disabled={aiBusy||(!textKeyForm.key.trim()&&!textInfo.hasKey&&!textInfo.keyOptional)}>Save</button><button className="ghost" disabled={aiBusy||!textInfo.configured} onClick={()=>testAI(textKeyProvider)}>Test</button><button className="ghost" disabled={aiBusy||!textInfo.configured||ai.activeProvider===textKeyProvider} onClick={()=>chooseAI(textKeyProvider)}>{ai.activeProvider===textKeyProvider?'✓ Used for scripts':'Use for scripts'}</button>{textInfo.hasKey&&!textInfo.fromEnv&&<button className="ghost danger" disabled={aiBusy} onClick={()=>saveTextKey(true)}>Remove key</button>}</div>
+            {testResults[`text:${textKeyProvider}`]&&(r=>r&&<div className={`prioResult ${r.pending?'pending':r.ok?'ok':'bad'}`}>{r.pending?<><span className="spinner" aria-hidden="true"/>Testing…</>:<>{r.ok?'✓':'✕'} {r.message}<em> · {new Date(r.at).toLocaleTimeString()}</em></>}</div>)(testResults[`text:${textKeyProvider}`])}
+          </div>
           <p className="muted small">Model names, temperature and token limits are under Advanced.</p>
         </Card>
-        <Card eyebrow="STEP 2 · IMAGES" title="Scene images" actions={<button onClick={()=>saveAIConfig({media:ai.media},'Image settings')} disabled={aiBusy}>Save</button>}>
-          <div className="providerGrid">{[['gemini','Gemini Image'],['openai','OpenAI'],['cloudflare','Cloudflare Workers AI'],['pollinations','Pollinations'],['mock','Mock / Development']].map(([id,name])=><div className={`providerCard ${imageProvider===id?'selected':''}`} key={id}><div className="providerTop"><div><strong>{name}</strong><small>{ai.media?.imageProviders?.[id]?.model||'—'}</small></div><span className={`statusDot ${ai.media?.imageProviders?.[id]?.configured?'online':''}`}/></div><small className="muted">{ai.media?.imageProviders?.[id]?.configured?'Configured':'Not configured'}</small><div className="row"><button disabled={aiBusy||imageProvider===id} onClick={()=>chooseMedia('image',id)}>{imageProvider===id?'✓ Active':'Use'}</button><button className="ghost" disabled={aiBusy} onClick={()=>testMedia('image',id)}>Test</button></div></div>)}</div>
-          <div className="formGrid">
+        </>}
+        {providerTab==='images'&&<>
+        <Card eyebrow="SCENE IMAGES" title="Order of providers" actions={<span className="muted small">Main: <b>{ai.media?.imageProviders?.[ai.media?.imageProvider]?.name||'—'}</b></span>}>
+          <p className="muted small">Each scene image is made by the first provider; if it fails, the next one makes it. Use ↑ ↓ to change the order.</p>
+          <PriorityList kind="image" items={ai.media?.imageProviders||{}} order={ai.imagePriority?.order||[ai.media?.imageProvider].filter(Boolean)} fallbackEnabled={ai.imagePriority?.fallbackEnabled} busy={aiBusy} results={testResults} onSave={b=>saveMediaPriority('image',b)} onTest={id=>testMedia('image',id)} onEdit={id=>{setImageEdit(id);setTimeout(()=>document.getElementById('image-model-edit')?.scrollIntoView({behavior:'smooth',block:'center'}),50);}} editLabel={()=> 'Model'} describe={(id,p)=>`${p.model||'local'} · ${p.freeTier?'🆓 free':'💳 paid'}`} fallbackText="If an image provider fails (error, quota, safety block), make that image with the next provider"/>
+        </Card>
+        <Card eyebrow="SCENE IMAGES" title="Model & size">
+          <div className="formGrid" id="image-model-edit">
             <Field label={`Image model · ${imageProvider}`}><input list="image-model-presets" value={imageModel} onChange={e=>setAi(x=>({...x,media:{...x.media,imageModels:{...(x.media.imageModels||{}),[imageProvider]:e.target.value}}}))} placeholder="Enter or select model" disabled={imageProvider==='mock'}/><datalist id="image-model-presets">{imageModelPresets.map(m=><option key={m} value={m}/>)}</datalist></Field>
             <Field label={`Image size · ${imageProvider}`}><select value={imageSize} onChange={e=>setAi(x=>({...x,media:{...x.media,imageSizes:{...(x.media.imageSizes||{}),[imageProvider]:e.target.value},imageSize:e.target.value}}))}>{imageSizeOptions.map(x=><option key={x} value={x}>{x}</option>)}</select></Field>
           </div>
+          <div className="row"><button onClick={()=>saveAIConfig({media:ai.media},`${ai.media?.imageProviders?.[imageProvider]?.name||imageProvider} image settings`)} disabled={aiBusy}>Save {ai.media?.imageProviders?.[imageProvider]?.name||imageProvider} settings</button>{imageEdit&&<button className="ghost" onClick={()=>setImageEdit(null)}>Back to main provider</button>}</div>
           {imageProvider==='cloudflare'&&<p className="muted small">Cloudflare FLUX gets short, purely descriptive prompts (it cannot follow "no text" instructions); OCR then checks every image.</p>}
         </Card>
-        <Card eyebrow="STEP 3 · NARRATION" title="Voice" actions={<button onClick={()=>saveAIConfig({media:ai.media},'Narration settings')} disabled={aiBusy}>Save</button>}>
-          <div className="providerGrid">{[['groq','Groq Orpheus'],['openai','OpenAI TTS'],['gemini','Gemini TTS'],['mock','Mock / Development']].map(([id,name])=><div className={`providerCard ${ttsProvider===id?'selected':''}`} key={id}><div className="providerTop"><div><strong>{name}</strong><small>{ai.media?.ttsProviders?.[id]?.model||'local'}</small></div><span className={`statusDot ${ai.media?.ttsProviders?.[id]?.configured?'online':''}`}/></div><small className="muted">{id==='groq'?'English only':id==='mock'?'No audio':'English + Hindi'}</small><div className="row"><button disabled={aiBusy||ttsProvider===id} onClick={()=>chooseMedia('tts',id)}>{ttsProvider===id?'✓ Active':'Use'}</button><button className="ghost" disabled={aiBusy} onClick={()=>testMedia('tts',id)}>Test</button></div></div>)}</div>
-          <div className="formGrid">
+        </>}
+        {providerTab==='voice'&&<>
+        <Card eyebrow="NARRATION" title="Order of providers" actions={<span className="muted small">Main: <b>{ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name||'—'}</b></span>}>
+          <p className="muted small">A video is always narrated by <b>one</b> provider. If the first one fails, the <b>whole video</b> is re-recorded with the next one, so voices are never mixed.</p>
+          <PriorityList kind="tts" items={ai.media?.ttsProviders||{}} order={ai.ttsPriority?.order||[ai.media?.ttsProvider].filter(Boolean)} fallbackEnabled={ai.ttsPriority?.fallbackEnabled} busy={aiBusy} results={testResults} onSave={b=>saveMediaPriority('tts',b)} onTest={id=>testMedia('tts',id)} onEdit={id=>{if(NEW_TTS.includes(id)&&!ai.media?.ttsProviders?.[id]?.configured){setKeyProvider(id);setTimeout(()=>document.getElementById('tts-keys')?.scrollIntoView({behavior:'smooth',block:'start'}),50);return;}setTtsEdit(id);if(NEW_TTS.includes(id))setKeyProvider(id);setTimeout(()=>document.getElementById('tts-voice-edit')?.scrollIntoView({behavior:'smooth',block:'center'}),50);}} editLabel={(id,p)=>NEW_TTS.includes(id)&&!p.configured?'Set up key':'Voice'} describe={(id,p)=>`${p.voice?`${p.voice} · `:''}${id==='mock'?'no audio':ai.media?.ttsHindi?.[id]?'🇮🇳 Hindi + English':'English only'}${p.freeNote?` · ${p.freeNote}`:''}`} fallbackText="If the narration provider fails, re-record the whole video with the next one"/>
+        </Card>
+        <Card eyebrow="NARRATION" title="Voice & keys">
+          <div className="formGrid" id="tts-voice-edit">
             <Field label={`Voice model · ${ttsProvider}`}><input list="tts-model-presets" value={ttsModel} onChange={e=>setAi(x=>({...x,media:{...x.media,ttsModels:{...(x.media.ttsModels||{}),[ttsProvider]:e.target.value}}}))} placeholder="Enter or select model" disabled={ttsProvider==='mock'}/><datalist id="tts-model-presets">{ttsModelPresets.map(m=><option key={m} value={m}/>)}</datalist></Field>
             <Field label={`Voice · ${ttsProvider}`}><input list={ttsVoicePresets.length?'tts-voice-presets':undefined} value={ttsVoice} onChange={e=>setAi(x=>({...x,media:{...x.media,ttsVoices:{...(x.media.ttsVoices||{}),[ttsProvider]:e.target.value}}}))} placeholder="Enter voice" disabled={ttsProvider==='mock'}/>{ttsVoicePresets.length>0&&<datalist id="tts-voice-presets">{ttsVoicePresets.map(v=><option key={v} value={v}/>)}</datalist>}</Field>
           </div>
-          <p className="muted small">The selected provider is always used — there is no silent fallback. Gemini TTS applies an Indian Hindi storytelling style for Hindi profiles.</p>
+          <div className="row"><button onClick={()=>saveAIConfig({media:ai.media},`${ai.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider} voice`)} disabled={aiBusy}>Save {ai.media?.ttsProviders?.[ttsProvider]?.name||ttsProvider} voice</button>{ttsEdit&&<button className="ghost" onClick={()=>setTtsEdit(null)}>Back to main provider</button>}</div>
+          <div className="formSection" id="tts-keys"><h4>Keys for Hindi voice providers</h4>
+            <div className="profileTabs">{NEW_TTS.map(id=><button key={id} className={keyProvider===id?'active':''} onClick={()=>setKeyProvider(id)}>{ai.media?.ttsProviders?.[id]?.name||id}<span className={`miniDot ${ai.media?.ttsKeys?.[id]?.hasKey?'ok':''}`}/></button>)}</div>
+            <p className="muted small">{({azure:'Azure portal → create a “Speech” resource (Free F0 pricing tier) → Keys and Endpoint. Use region “centralindia” or the region shown there.',google:'Google Cloud console → enable “Cloud Text-to-Speech API” → Credentials → Create API key (restrict it to that API). Billing must be enabled on the project; WaveNet/Standard voices are free up to 4M characters a month.',elevenlabs:'elevenlabs.io → Profile → API keys. The free plan is non-commercial and requires attribution — use a paid plan for a monetized channel.',aiawaaz:'AI Awaaz → “Advanced: connect with a key” → enter a key name (e.g. YouTube AI Agent) → Make a key, and paste it here (with or without “Bearer”). Narration uses the generate_speech tool; it uses your AI Awaaz characters.'})[keyProvider]}</p>
+            <div className="formGrid">
+              <Field label="API key" hint={ai.media?.ttsKeys?.[keyProvider]?.hasKey?(ai.media.ttsKeys[keyProvider].fromEnv?'Using the key from server/.env. Enter one to save it here instead.':'Saved (encrypted). Leave blank to keep it.'):'Stored encrypted on this computer.'}><input type="password" autoComplete="new-password" value={ttsKeyForm.key} onChange={e=>setTtsKeyForm(f=>({...f,key:e.target.value}))} placeholder={ai.media?.ttsKeys?.[keyProvider]?.hasKey?'•••••••• saved':'Paste key'}/></Field>
+              {keyProvider==='azure'&&<Field label="Region"><input value={ttsKeyForm.region} onChange={e=>setTtsKeyForm(f=>({...f,region:e.target.value}))} placeholder="centralindia"/></Field>}
+              {keyProvider==='aiawaaz'&&<Field label="MCP server URL"><input value={ttsKeyForm.url} onChange={e=>setTtsKeyForm(f=>({...f,url:e.target.value}))} placeholder="https://app.aiawaaz.io/api/mcp"/></Field>}
+              {keyProvider==='aiawaaz'&&<Field label="Speech tool" hint="Leave blank to detect automatically."><input value={ttsKeyForm.tool} onChange={e=>setTtsKeyForm(f=>({...f,tool:e.target.value}))} placeholder="auto"/></Field>}
+            </div>
+            <div className="row wrap"><button onClick={()=>saveTtsKey(false)} disabled={aiBusy}>Save key</button>{ai.media?.ttsKeys?.[keyProvider]?.hasKey&&ttsProvider!==keyProvider&&<button className="ghost" onClick={()=>chooseMedia('tts',keyProvider)} disabled={aiBusy}>Use {ai.media?.ttsProviders?.[keyProvider]?.name} for narration</button>}<button className="ghost" onClick={()=>testMedia('tts',keyProvider)} disabled={aiBusy||!ai.media?.ttsProviders?.[keyProvider]?.configured}>Test</button><button className="ghost" onClick={loadTtsVoices} disabled={!ai.media?.ttsKeys?.[keyProvider]?.hasKey}>{keyProvider==='aiawaaz'?'Connect & load voices':'Load Hindi voices'}</button>{ai.media?.ttsKeys?.[keyProvider]?.hasKey&&!ai.media.ttsKeys[keyProvider].fromEnv&&<button className="danger ghost" onClick={()=>saveTtsKey(true)} disabled={aiBusy}>Remove key</button>}</div>
+            {(r=>r&&<div className={`prioResult ${r.pending?'pending':r.ok?'ok':'bad'}`}>{r.pending?<><span className="spinner" aria-hidden="true"/>Testing…</>:<>{r.ok?'✓':'✕'} {r.message}<em> · {new Date(r.at).toLocaleTimeString()}</em></>}</div>)(testResults[`tts:${keyProvider}`])}
+            {ttsVoiceMsg&&<div className="banner info inline">{ttsVoiceMsg}</div>}
+            {ttsVoiceList?.voices?.length>0&&<Field label="Pick a voice" hint="Then click Save at the top of this card."><select value={ai.media?.ttsVoices?.[keyProvider]||''} onChange={e=>setAi(x=>({...x,media:{...x.media,ttsVoices:{...(x.media.ttsVoices||{}),[keyProvider]:e.target.value}}}))}><option value="">— choose —</option>{[...new Map([...(ai.media?.ttsVoices?.[keyProvider]?[[ai.media.ttsVoices[keyProvider],{id:ai.media.ttsVoices[keyProvider],name:ai.media.ttsVoices[keyProvider]}]]:[]),...ttsVoiceList.voices.map(v=>[v.id,v])]).values()].map(v=><option key={v.id} value={v.id}>{v.name||v.id}</option>)}</select></Field>}
+            {keyProvider==='aiawaaz'&&<Toggle checked={ttsKeyForm.enhance} onChange={v=>setTtsKeyForm(f=>({...f,enhance:v}))} label="Add emotions (V3 voices)" hint="Runs each scene through enhance_for_v3 (laughs, pauses…) before speaking. Only for V3 voices. Click Save key to apply."/>}
+            {keyProvider==='aiawaaz'&&ttsVoiceList?.account&&<div className="kvGrid">{typeof ttsVoiceList.account==='object'?Object.entries(ttsVoiceList.account).filter(([,v])=>['string','number','boolean'].includes(typeof v)).slice(0,6).map(([k,v])=><div className="kv" key={k}><span>{k.replace(/_/g,' ')}</span><b>{String(v)}</b></div>):<div className="kv"><span>Account</span><b>{String(ttsVoiceList.account).slice(0,200)}</b></div>}</div>}
+            {keyProvider==='aiawaaz'&&ttsVoiceList?.tools&&<details className="howTo"><summary>Tools offered by the server ({ttsVoiceList.tools.length})</summary><ul>{ttsVoiceList.tools.map(t=><li key={t.name}><b>{t.name}</b>{t.name===ttsVoiceList.ttsTool?' ← used for narration':''}<br/><small className="muted">{t.description} {t.arguments?.length?`(${t.arguments.join(', ')})`:''}</small></li>)}</ul></details>}
+          </div>
+          <p className="muted small">The selected provider is always used — there is no silent fallback. For Hindi channels choose a provider marked 🇮🇳; each profile can also pick its own voice.</p>
         </Card>
+        </>}
       </>}
       {ai&&settingsTab==='output'&&<Card eyebrow="RENDERING" title="Video output" actions={<button onClick={()=>saveAIConfig({video:ai.video},'Video output')} disabled={aiBusy}>Save</button>}>
         <div className="formSection"><h4>Frame</h4><div className="formGrid four">
@@ -768,6 +1053,7 @@ function App(){
         <Toggle checked={ai.retention?.autoDeleteEnabled??true} onChange={v=>setAi(x=>({...x,retention:{...(x.retention||{}),autoDeleteEnabled:v}}))} label="Automatically delete old generated media" hint="Published, scheduled and uploading videos are never deleted automatically."/>
         <div className="formGrid"><Field label="Delete after (days)"><input type="number" min="1" max="3650" value={ai.retention?.days??30} onChange={e=>setAi(x=>({...x,retention:{...(x.retention||{}),days:Number(e.target.value)}}))} disabled={ai.retention?.autoDeleteEnabled===false}/></Field></div>
       </Card>}
+      {settingsTab==='site'&&<SiteSettingsCard site={site} setSite={setSite} load={loadSite} save={saveSite} busy={siteBusy} msg={siteMsg}/>}
       {ai&&settingsTab==='advanced'&&<>
         <Card eyebrow="ADVANCED" title="Script model tuning" actions={<button onClick={()=>saveAIConfig({text:ai.text},'Script model settings')} disabled={aiBusy}>Save</button>}>
           <div className="formGrid">{['gemini','groq','cerebras','openai'].map(p=><Field key={p} label={`${p[0].toUpperCase()+p.slice(1)} model`}><input value={ai.text?.models?.[p]||''} onChange={e=>setAi(x=>({...x,text:{...x.text,models:{...x.text.models,[p]:e.target.value}}}))}/></Field>)}
@@ -792,7 +1078,7 @@ function App(){
 
   {selected&&<div className="detailOverlay" onClick={()=>setSelected(null)}><div className="detailPanel" role="dialog" aria-label="Video details" onClick={e=>e.stopPropagation()}>
     <div className="detailHead"><div><small className="eyebrow">VIDEO DETAILS</small><h2>{selected.title}</h2><div className="detailMeta"><StatusPill status={selected.status}/>{selected.profile&&<span className={`profileTag ${selected.profile.archived?'archived':''}`}>{selected.profile.name}</span>}<span>Created {new Date(selected.createdAt).toLocaleString()}</span><span>Updated {new Date(selected.updatedAt).toLocaleString()}</span>{selected.qa?.score!=null&&<span>QA <b>{selected.qa.score}/100</b></span>}</div></div>
-      <div className="row">{selected.status==='AWAITING_APPROVAL'&&<button onClick={()=>approve(selected._id)} disabled={!selected.visualReview?.reviewedAt} title={selected.visualReview?.reviewedAt?'':'Complete the visual review first (QA & review tab)'}>Approve</button>}{['FAILED','CANCELLED'].includes(selected.status)&&<button onClick={()=>retryVideo(selected._id)}>Continue</button>}<button className="danger ghost" onClick={()=>deleteVideo(selected._id)}>Delete</button><button className="ghost" onClick={()=>setSelected(null)} aria-label="Close">✕</button></div>
+      <div className="row">{selected.status==='AWAITING_APPROVAL'&&<button onClick={()=>approve(selected._id)} disabled={!selected.visualReview?.reviewedAt} title={selected.visualReview?.reviewedAt?'':'Complete the visual review first (QA & review tab)'}>Approve</button>}{['FAILED','CANCELLED'].includes(selected.status)&&<button onClick={()=>retryVideo(selected._id)}>Continue</button>}{selected.status==='SCENE_REVIEW'&&<button onClick={()=>renderVideo(selected._id)}>Render video</button>}<button className="danger ghost" onClick={()=>deleteVideo(selected._id)}>Delete</button><button className="ghost" onClick={()=>setSelected(null)} aria-label="Close">✕</button></div>
     </div>
     {selected.error&&<div className="videoError">{selected.error}</div>}
     <div className="detailTabs">{[['overview','Overview'],['qa','QA & review'],['scenes','Scenes'],['youtube','YouTube'],['export','Logs & export'],['pipeline','Pipeline inspector']].map(([id,name])=><button key={id} className={detailTab===id?'active':''} onClick={()=>setDetailTab(id)}>{name}</button>)}</div>
@@ -803,7 +1089,7 @@ function App(){
       </div>
     </div>}
     {detailTab==='qa'&&<section className="qaPanel"><div className="sectionHead"><div><small className="eyebrow">RETENTION & QUALITY ENGINE</small><h4>Video QA Report</h4></div><button className="ghost" disabled={qaBusy||!selected.renderPath} onClick={rerunQA}>{qaBusy?'Checking…':'Run QA again'}</button></div>{Boolean(selected.qa && Array.isArray(selected.qa.checks))?<><div className="qaSummary"><strong>{selected.qa.score}/100</strong><span>{selected.qa.pass?'Technical checks passed':'Technical checks failed'}</span><small>{selected.qa.summary?.passed||0} passed · {selected.qa.summary?.warnings||0} warnings · {selected.qa.summary?.failures||0} failures{Number.isFinite(Number(selected.qa.retention?.score))?` · Retention ${selected.qa.retention.score}/100`:''}</small></div><div className="qaChecks">{(selected.qa.checks||[]).map((c,i)=><div className="qaCheck" key={`${c.name}-${i}`}><b className={`qaBadge ${String(c.status||'').toLowerCase()}`}>{c.status}</b><div><strong>{c.name}</strong><span>{c.message}</span>{c.audioIntelligence&&<AudioDetails data={c.audioIntelligence}/>}</div></div>)}</div></>:<p className="muted">No QA report yet. Run QA to inspect the rendered MP4.</p>}<div className="manualReview"><h4>Human visual review</h4><p className="muted">Automated checks cannot reliably judge story-image relevance or audience suitability. Watch the video before approving it.</p><label><input type="checkbox" checked={visualChecks.imagesMatch} onChange={e=>setVisualChecks(v=>({...v,imagesMatch:e.target.checked}))}/> Every image matches its narration and characters remain consistent</label><label><input type="checkbox" checked={visualChecks.subtitlesReadable} onChange={e=>setVisualChecks(v=>({...v,subtitlesReadable:e.target.checked}))}/> Subtitles are readable and do not hide important action</label><label><input type="checkbox" checked={visualChecks.ageAppropriate} onChange={e=>setVisualChecks(v=>({...v,ageAppropriate:e.target.checked}))}/> Story and visuals are suitable for the channel's intended audience</label><div className="row"><button onClick={saveVisualReview} disabled={!Object.values(visualChecks).every(Boolean)||selected.status!=='AWAITING_APPROVAL'}>Save visual review</button>{selected.visualReview?.reviewedAt&&<small className="muted">Reviewed {new Date(selected.visualReview.reviewedAt).toLocaleString()}</small>}</div></div></section>}
-    {detailTab==='scenes'&&<section className="sceneReview"><div className="sectionHead"><div><small className="eyebrow">SELECTIVE REGENERATION</small><h4>Scene assets</h4></div><button className="ghost" disabled={qaBusy||!selected.renderPath} onClick={rerenderOnly}>Re-render video only</button></div><p className="muted">Regenerate a single image without regenerating narration or the other scene images.</p><div className="sceneReviewGrid">{(selected.storyId?.scenes||[]).map((scene,i)=>{const n=Number(scene.sceneNumber||i+1);const asset=(selected.sceneAssets||[]).find(x=>Number(x.sceneNumber)===n);return <article className="sceneReviewCard" key={n}>{asset?.fileName?<img src={`${STORAGE}/storage/videos/${selected._id}/scenes/${encodeURIComponent(asset.fileName)}`} alt={`Scene ${n}`} loading="lazy"/>:<div className="noImage">No image</div>}<div><b>Scene {n}{scene.durationSec?` · ${Number(scene.durationSec).toFixed(1)} s`:''}</b><p>{scene.narration||scene.visualPrompt||'No scene description available.'}</p>{(()=>{const meaning=selected.storyId?.pipelineData?.visualDirectorPlan?.scenes?.find(x=>Number(x.sceneNumber)===n)?.narrationMeaning;return meaning?<p className="sceneMeaning">Image should show: {meaning}</p>:null})()}{asset?.prompt&&<details className="scenePrompt"><summary>{asset.reused?'Image prompt (image reused from an earlier run)':'Image prompt sent to the model'}</summary><p>{asset.prompt}</p></details>}<button className="ghost" disabled={qaBusy||!['AWAITING_APPROVAL','APPROVED','FAILED','CANCELLED'].includes(selected.status)} onClick={()=>regenerateScene(n)}>Regenerate image</button></div></article>})}</div></section>}
+    {detailTab==='scenes'&&<section className="sceneReview"><div className="sectionHead"><div><small className="eyebrow">SELECTIVE REGENERATION</small><h4>Scene assets</h4></div><div className="row"><button className="ghost" disabled={qaBusy||!['AWAITING_APPROVAL','APPROVED','FAILED','CANCELLED','SCENE_REVIEW'].includes(selected.status)} onClick={rebuildImages}>Rebuild images to match narration</button><button className="ghost" disabled={qaBusy||!selected.renderPath} onClick={rerenderOnly}>Re-render video only</button></div></div><p className="muted">Regenerate a single image without regenerating narration or the other scene images.</p>{(selected.sceneAssets||[]).some(a=>a.stale)&&<div className="banner info inline">⚠ Scene {(selected.sceneAssets||[]).filter(a=>a.stale).map(a=>a.sceneNumber).join(', ')}: the image was made from an older description and may not match the narration. Use “Rebuild images to match narration” or regenerate those scenes.</div>}<div className="sceneReviewGrid">{(selected.storyId?.scenes||[]).map((scene,i)=>{const n=Number(scene.sceneNumber||i+1);const asset=(selected.sceneAssets||[]).find(x=>Number(x.sceneNumber)===n);return <article className="sceneReviewCard" key={n}>{asset?.fileName?<img src={`${STORAGE}/storage/videos/${selected._id}/scenes/${encodeURIComponent(asset.fileName)}`} alt={`Scene ${n}`} loading="lazy"/>:<div className="noImage">No image</div>}<div><b>Scene {n}{scene.durationSec?` · ${Number(scene.durationSec).toFixed(1)} s`:''}</b><p>{scene.narration||scene.visualPrompt||'No scene description available.'}</p>{(()=>{const meaning=selected.storyId?.pipelineData?.visualDirectorPlan?.scenes?.find(x=>Number(x.sceneNumber)===n)?.narrationMeaning;return meaning?<p className="sceneMeaning">Image should show: {meaning}</p>:null})()}{asset?.stale&&<p className="staleNote">⚠ Image may not match — made from an older description.</p>}{(asset?.prompt||asset?.currentPrompt)&&<details className="scenePrompt"><summary>{asset.prompt?(asset.reused?'Prompt this image was made from (reused from an earlier run)':'Image prompt sent to the model'):'Current scene description (origin of this image unknown)'}</summary><p>{asset.prompt||asset.currentPrompt}</p>{asset.imagePromptUsed&&asset.imagePromptUsed!==asset.prompt&&<p className="muted small">Text-free retry prompt actually used: {asset.imagePromptUsed}</p>}</details>}<button className="ghost" disabled={qaBusy||!['AWAITING_APPROVAL','APPROVED','FAILED','CANCELLED','SCENE_REVIEW'].includes(selected.status)} onClick={()=>regenerateScene(n)}>Regenerate image</button></div></article>})}</div></section>}
     {detailTab==='youtube'&&<YouTubePanel key={selected._id} video={selected} onDone={refreshSelected} onEditProfile={id=>{setSelected(null);editProfile(id);setProfileSection('youtube');}}/>}
     {detailTab==='export'&&<DiagnosticsExport selected={selected}/>}
     {detailTab==='pipeline'&&<><p className="muted">Complete step-by-step execution trace. Every stage keeps its INPUT, OUTPUT, META, timing and error data.</p><PipelineTrace job={selected.jobs?.[0]}/></>}

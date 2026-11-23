@@ -8,6 +8,7 @@ import {buildChannelProfile} from '../channelProfile.js';
 import {normalizeUploadSettings,buildUploadMetadata,nextScheduledSlot} from '../uploadSettings.js';
 import {credentialsOf,tokensOf,readiness,publicAccount,applyCredentialUpdate,withTokens,disconnected} from './youtubeAccount.js';
 import Story from '../../models/Story.js';
+import {notify} from '../telegram/notifier.js';
 import {getActiveProvider} from '../ai/index.js';
 import {SEO_VERSION,extractSeo,generateUploadSeo,applySeoRules,seoReport,isShortForm} from './uploadSeo.js';
 import {buildAuthUrl,exchangeCode,refreshTokens,needsRefresh,revokeToken,getMyChannel,uploadVideoFile,addToPlaylist} from './youtubeApi.js';
@@ -147,6 +148,7 @@ export async function uploadVideo(videoId,opts={}){
     // Do not leave the video stuck in UPLOADING; it can be uploaded again.
     const msg=`YouTube upload failed: ${e.message}`;
     await Video.findByIdAndUpdate(videoId,{$set:{status:'APPROVED',error:msg},$push:{statusHistory:{status:'APPROVED',message:msg,at:new Date(),attempt:0,source:'YOUTUBE'}}});
+    notify('uploadFailed',{videoId:String(videoId),message:msg});
     throw new PublishError(msg,502);
   }
   const warnings=[];
@@ -154,5 +156,6 @@ export async function uploadVideo(videoId,opts={}){
   const finalStatus=publishAt?'SCHEDULED':'PUBLISHED';
   const message=publishAt?`Uploaded to "${channel}" (${id}); goes public ${publishAt.toISOString()}.`:`Uploaded to "${channel}" as ${privacy} (${id}).`;
   await Video.findByIdAndUpdate(videoId,{$set:{youtubeVideoId:id,status:finalStatus,scheduledAt:publishAt,youtubeMetadata:{...meta,privacyStatus:privacy,seoScore:report.score,seoChecks:report.checks,focusKeyword:seo?.focusKeyword||null,channelId:series.youtubeAccount?.channelId||null,uploadedAt:new Date(),warnings}},$push:{statusHistory:{status:finalStatus,message:[message,...warnings].join(' '),at:new Date(),attempt:0,source:'YOUTUBE'}}});
+  notify('uploaded',{videoId:String(videoId),title:meta.title,profileId:String(series._id),profileName:series.name,channelTitle:series.youtubeAccount?.channelTitle||null,privacyStatus:privacy,scheduledAt:publishAt,timezone:settings.timezone,seoScore:report.score,url:`https://youtu.be/${id}`,message:warnings.join(' ')});
   return {youtubeVideoId:id,status:finalStatus,privacyStatus:privacy,publishAt,url:`https://www.youtube.com/watch?v=${id}`,metadata:meta,seoReport:report,warnings};
 }

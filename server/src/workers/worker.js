@@ -1,13 +1,18 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import Series from '../models/Series.js';
+import {createHash} from 'node:crypto';
+import {notify} from '../services/telegram/notifier.js';
+import {chooseTopic} from '../services/trends/trendService.js';
 import Character from '../models/Character.js';
 import Story from '../models/Story.js';
 import Video from '../models/Video.js';
 import GenerationJob from '../models/GenerationJob.js';
-import {getActiveProvider, getAISettings, getMediaSettings} from '../services/ai/index.js';
+import {getActiveProvider, getAISettings, getMediaSettings, mediaChain, mediaOverride} from '../services/ai/index.js';
+import {aiEvents} from '../services/ai/aiEvents.js';
 import {env} from '../config/env.js';
-import {generateImage,generateSpeech} from '../services/media/openaiMedia.js';
+import {generateImage,generateSpeech,currentSpeechVoice,lastImageProvider} from '../services/media/openaiMedia.js';
+import {speechSignature,readNarrationNote,writeNarrationNote,canReuseNarration,reuseProblem} from '../services/media/narrationReuse.js';
 import {generateMockImage,generateMockSpeech} from '../services/media/mockMedia.js';
 import {renderVideo,getAudioDuration} from '../services/video/renderer.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
@@ -76,7 +81,10 @@ async function setVideoStatus(videoId,status,message,errorMode='keep',attempt=0)
   const update={$set:{status},$push:{statusHistory:{status,message,at:new Date(),attempt,source:'VIDEO'}}};
   if(errorMode==='clear') update.$unset={error:1};
   if(errorMode==='set') update.$set.error=message;
-  return Video.findOneAndUpdate({_id:videoId,status:{$ne:status}},update,{returnDocument:'after'});
+  const changed=await Video.findOneAndUpdate({_id:videoId,status:{$ne:status}},update,{returnDocument:'after'});
+  const event={AWAITING_APPROVAL:'ready',FAILED:'failed',CANCELLED:'cancelled',SCENE_REVIEW:'sceneReady'}[status];
+  if(changed&&event)notify(event,{videoId:String(videoId),message});
+  return changed;
 }
 
 async function assertNotCancelled(jobId,videoId,attempt=0){
@@ -92,6 +100,9 @@ async function processJob(job){
   busy=true;
   const jobId=job._id;
   currentJobId=jobId;
+  // AI provider waits/retries go into this job's log, so the app shows what is happening.
+  const onAiProgress=e=>{GenerationJob.findByIdAndUpdate(jobId,{$set:{lastHeartbeatAt:new Date()},$push:{logs:{at:e.at||new Date(),level:e.level||'info',message:e.message}}}).catch(()=>{});};
+  aiEvents.on('progress',onAiProgress);
   const attempt=Number(job.retryCount||0);
   let video=null;
   try{
@@ -123,14 +134,18 @@ async function processJob(job){
       const episodeNumber=(await Story.countDocuments({seriesId:series._id}))+1;
       await updateJob(jobId,8,'SCRIPT_GENERATING','Generating original story.');
       const aiProvider=await getActiveProvider();
-      await updateJob(jobId,7,'AI_PROVIDER',`Using ${job.payload?.aiProvider || 'active'} AI provider.`);
+      await updateJob(jobId,7,'AI_PROVIDER',aiProvider.chain?.length>1?`Script AI in priority order: ${aiProvider.chain.join(' → ')} (the next is tried if one fails).`:`Using ${aiProvider.chain?.[0]||job.payload?.aiProvider||'active'} AI provider.`);
       const recentStories=await Story.find({seriesId:series._id}).sort({createdAt:-1}).limit(12).select('title topic').lean();
-      const topicIdeas=Array.isArray(series.topicIdeas)?series.topicIdeas.filter(Boolean):[];
-      const cursor=Number(series.topicCursor||0);
-      const rotatedTopic=topicIdeas.length ? topicIdeas[cursor % topicIdeas.length] : null;
-      const generationTopic=job.payload?.topic || rotatedTopic || null;
-      if(!job.payload?.topic && topicIdeas.length) await Series.findByIdAndUpdate(series._id,{$set:{topicCursor:(cursor+1)%topicIdeas.length}});
-      const storyData=await traceStage(jobId,'STORY_GENERATION',{topic:generationTopic,language:series.language||'English',topicSource:job.payload?.topic?'user':rotatedTopic?'research-rotation':'ai-selected',episodeNumber,seriesId:series._id,niche:series.niche,channelProfile:channelProfileSummary(channelProfile),contentStrategy:series.contentStrategy||null,channelResearch:series.channelResearch?.strategy||null,recentStories,characterCount:characters.length,provider:job.payload?.aiProvider||'active'},()=>aiProvider.generateStory({series,channelProfile,characters,episodeNumber,topic:generationTopic,recentStories,language:channelProfile.language,format:job.payload?.format||channelProfile.content.primaryFormat||'Short',durationSec:job.payload?.durationSec||55,hookStyle:job.payload?.hookStyle||channelProfile.content.hookStyle,audience:job.payload?.audience||channelProfile.audience.description}),{provider:job.payload?.aiProvider||'active',topicSource:job.payload?.topic?'user':rotatedTopic?'research-rotation':'ai-selected'});
+      // Topic: typed by the user, else the profile's topic source (topic queue and/or current trends).
+      let chosen={topic:job.payload?.topic||null,source:'user'};
+      if(!chosen.topic){
+        chosen=await traceStage(jobId,'TOPIC_SELECTION',{topicSource:channelProfile?.content?.topicSource||'queue-then-trending',trendRegion:channelProfile?.content?.trendRegion||'IN'},()=>chooseTopic(series,{provider:aiProvider}));
+        await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:chosen.topic?`Topic (${chosen.source}${chosen.idea?.trend?`, trend "${chosen.idea.trend}"`:''}): ${chosen.topic}`:`Topic chosen by the AI. ${chosen.note||''}`,level:'info'}}});
+      }
+      const generationTopic=chosen.topic||null;
+      const storyData=await traceStage(jobId,'STORY_GENERATION',{topic:generationTopic,topicAngle:chosen.idea?.angle||null,language:series.language||'English',topicSource:chosen.source,episodeNumber,seriesId:series._id,niche:series.niche,channelProfile:channelProfileSummary(channelProfile),contentStrategy:series.contentStrategy||null,channelResearch:series.channelResearch?.strategy||null,recentStories,characterCount:characters.length,provider:job.payload?.aiProvider||'active'},()=>aiProvider.generateStory({series,channelProfile,characters,episodeNumber,topic:chosen.idea?.angle?`${generationTopic}. Angle: ${chosen.idea.angle}`:generationTopic,recentStories,language:channelProfile.language,format:job.payload?.format||channelProfile.content.primaryFormat||'Short',durationSec:job.payload?.durationSec||55,hookStyle:job.payload?.hookStyle||channelProfile.content.hookStyle,audience:job.payload?.audience||channelProfile.audience.description}),{provider:job.payload?.aiProvider||'active',topicSource:chosen.source||(chosen.topic?'topic-queue':'ai-selected')});
+      // Move to the next queued topic only once the script exists, so a failed attempt keeps its topic.
+      if(chosen.advanceQueue){const n=(series.topicIdeas||[]).filter(Boolean).length;await Series.findByIdAndUpdate(series._id,{$set:{topicCursor:(Number(series.topicCursor||0)+1)%Math.max(1,n)}});}
       await assertNotCancelled(jobId,null);
       await updateJob(jobId,14,'YOUTUBE_OPTIMIZING','Running all 11 YouTube Skills and recording each step.');
       const youtubeOptimization=await traceStage(jobId,'YOUTUBE_OPTIMIZATION',{topic:job.payload?.topic,title:storyData?.title,sceneCount:Array.isArray(storyData?.scenes)?storyData.scenes.length:0},()=>optimizeForGeneration({
@@ -168,7 +183,9 @@ async function processJob(job){
     const aiMedia=await getAISettings();
     const mediaSettings=await getMediaSettings();
     if(!mediaSettings.mockMode && !mediaSettings.generationEnabled) throw new Error('Real media generation is disabled in Settings. Enable Media Generation.');
-    const selectedImageProvider=String(aiMedia.media?.imageProvider || env.imageProvider || 'openai').toLowerCase();
+    // Images use the Settings priority list: the first provider leads, the next ones are backups.
+    const imageChain=mediaSettings.mockMode?[]:await mediaChain('image');
+    const selectedImageProvider=String(imageChain[0]?.id || aiMedia.media?.imageProvider || env.imageProvider || 'openai').toLowerCase();
     const selectedImageMeta=aiMedia.media?.imageProviders?.[selectedImageProvider] || (selectedImageProvider === 'cloudflare' ? {name:'Cloudflare Workers AI', configured:Boolean(env.cloudflareAccountId && env.cloudflareApiToken), model:env.cloudflareImageModel} : selectedImageProvider === 'openai' ? {name:'OpenAI', configured:Boolean(env.openaiKey), model:env.imageModel} : {name:'Mock / Development', configured:true, model:'local'});
     const useMockImages = selectedImageProvider === 'mock' || mediaSettings.mockMode;
     const effectiveMediaMode = useMockImages ? 'mock' : 'real';
@@ -176,7 +193,7 @@ async function processJob(job){
     await assertNotCancelled(jobId,video._id,attempt);
     const base=path.resolve('storage','videos',String(video._id)); await fs.mkdir(base,{recursive:true});
     const scenesDir=path.join(base,'scenes'); await fs.mkdir(scenesDir,{recursive:true});
-    await updateJob(jobId,24,'ASSETS_GENERATING',effectiveMediaMode === 'mock' ? `Media mode: MOCK (${selectedImageMeta?.name || 'Mock / Development'}). [provider=${selectedImageProvider}]` : `Media mode: REAL (${selectedImageMeta?.name || selectedImageProvider}). [provider=${selectedImageProvider}]`);
+    await updateJob(jobId,24,'ASSETS_GENERATING',effectiveMediaMode === 'mock' ? `Media mode: MOCK (${selectedImageMeta?.name || 'Mock / Development'}). [provider=${selectedImageProvider}]` : `Media mode: REAL (${selectedImageMeta?.name || selectedImageProvider}${imageChain.length>1?`; backups: ${imageChain.slice(1).map(x=>x.name).join(' → ')}`:''}). [provider=${selectedImageProvider}]`);
     if(!Array.isArray(story.scenes)||story.scenes.length===0) throw new Error('No scene data is available for image generation.');
     const sceneFiles=[];
     const assetDetails=[];
@@ -237,17 +254,21 @@ async function processJob(job){
       const charactersForPlan=characters.map(c=>({name:c.name,appearance:c.appearance||'',personality:c.personality||''}));
       const input={
         series:{name:seriesDoc.name,premise:seriesDoc.premise,niche:seriesDoc.niche,visualStyle:seriesDoc.visualStyle,language:seriesDoc.language},
+        video:{title:storyDoc.title,topic:storyDoc.topic,hook:storyDoc.hook},
         channelProfile:profile,
         characters:charactersForPlan,
-        scenes:storyDoc.scenes.map(s=>({sceneNumber:s.sceneNumber,narration:s.narration,visualPrompt:s.visualPrompt,onScreenText:s.onScreenText,durationSec:s.durationSec}))
+        scenes:storyDoc.scenes.map(s=>({sceneNumber:s.sceneNumber,narration:s.narration,durationSec:s.durationSec}))
       };
       let plan;
       try{
         plan=normalizeVisualPlan(await activeProvider.generateJson(buildVisualDirectorInstruction(profile,seriesDoc),input,'visual director'),storyDoc.scenes);
       }catch(firstError){
         // One stricter retry (most often: the model answered in the narration language).
-        plan=normalizeVisualPlan(await activeProvider.generateJson(buildVisualDirectorInstruction(profile,seriesDoc,{strict:true}),input,'visual director (retry)'),storyDoc.scenes);
+        plan=normalizeVisualPlan(await activeProvider.generateJson(buildVisualDirectorInstruction(profile,seriesDoc,{strict:true}),input,'visual director (retry)'),storyDoc.scenes,{sanitizeText:true});
       }
+      // Scenes the user described themselves (dashboard/Telegram scene edit) keep their image description.
+      const edited=new Map((existing?.scenes||[]).filter(x=>x?.editedAt||x?.userInstruction).map(x=>[Number(x.sceneNumber),x]));
+      if(edited.size)plan={...plan,scenes:plan.scenes.map(p=>edited.has(p.sceneNumber)?{...p,...edited.get(p.sceneNumber),keyIdea:''}:p)};
       for(const p of plan.scenes){const scene=storyDoc.scenes.find((x,i)=>Number(x.sceneNumber||i+1)===p.sceneNumber);if(scene)scene.visualPrompt=p.visualPrompt;}
       storyDoc.pipelineData={...(storyDoc.pipelineData||{}),visualDirectorPlan:plan};
       await storyDoc.save();
@@ -282,8 +303,12 @@ async function processJob(job){
       const scene=story.scenes[i];
       const sceneNumber=scene.sceneNumber||i+1;
       const sceneImagePrompt=buildSceneImagePrompt(scene,i,visualDirectorPlan);
-      const forceThisScene=Number(job.payload?.forceRegenerateSceneNumber||0)===Number(sceneNumber);
       const savedAsset=video.mediaAssetDetails?.find(x=>Number(x.sceneNumber)===Number(sceneNumber));
+      // Fingerprint of the exact prompt; an image is only reused for the prompt it was made from.
+      const promptKey=createHash('sha1').update(sceneImagePrompt).digest('hex').slice(0,16);
+      const staleImage=!job.payload?.renderOnly&&Boolean(savedAsset?.promptKey)&&savedAsset.promptKey!==promptKey;
+      if(staleImage)await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: its description changed since the image was made; generating a new image instead of reusing the old one.`,level:'info'}}});
+      const forceThisScene=Boolean(job.payload?.forceRegenerateAllScenes)||staleImage||Number(job.payload?.forceRegenerateSceneNumber||0)===Number(sceneNumber);
       const ext=useMockImages?'ppm':'png';
       const canonicalPath=path.join(scenesDir,`scene-${String(i+1).padStart(2,'0')}.${ext}`);
       // Selective regeneration must write a NEW immutable asset path. Reusing the
@@ -295,6 +320,7 @@ async function processJob(job){
         : ((job.payload?.renderOnly || resumeId) && savedAsset?.path ? savedAsset.path : canonicalPath);
       let reusable=false;
       let reuseTextQa=null;
+      if(!forceThisScene&&savedAsset?.path)await GenerationJob.findByIdAndUpdate(jobId,{$set:{lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: checking the saved image (file and text check) before reusing it.`,level:'info'}}});
       try{const asset=await validateImageAsset(p,expectedMode,sceneNumber); reusable=asset.valid&&!forceThisScene;}catch{}
       // Previously generated assets must pass the same OCR gate before reuse.
       if(reusable && expectedMode==='real'){
@@ -333,7 +359,7 @@ async function processJob(job){
           if(useMockImages) generatedPath=await generateMockImage(scene.visualPrompt,p);
           else {
             try {
-              generatedPath=await generateImage(usedPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
+              generatedPath=await generateImage(usedPrompt,p,useMockImages?selectedImageProvider:null,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
             } catch (imageError) {
               const isCloudflareSafetyBlock=selectedImageProvider==='cloudflare' && /Cloudflare Workers AI image generation failed \(400\)/i.test(String(imageError?.message||'')) && /(NSFW|8007|prompt contains)/i.test(String(imageError?.message||''));
               if(!isCloudflareSafetyBlock) throw imageError;
@@ -354,7 +380,7 @@ async function processJob(job){
               usedPrompt=limitPromptText(rewritten.visualPrompt,1200);
               safetyRewriteUsed=true;
               await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber}: Cloudflare safety filter rejected the original image prompt. Retrying once with a policy-compliant channel-aware rewrite; safety filters remain enabled.`,level:'warning'}}});
-              generatedPath=await generateImage(usedPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
+              generatedPath=await generateImage(usedPrompt,p,useMockImages?selectedImageProvider:null,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize});
             }
           }
 
@@ -387,7 +413,7 @@ async function processJob(job){
               // provider's prompt limit; the clean-image correction is placed first.
               const retryPrompt=buildCleanImageRetryPrompt(cleanRetryBasePrompt,{maxChars:promptLimitFor(selectedImageProvider),promptStyle:imagePromptStyle});
               let retryPath;
-              try{ retryPath=await generateImage(retryPrompt,p,selectedImageProvider,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize}); }
+              try{ retryPath=await generateImage(retryPrompt,p,useMockImages?selectedImageProvider:null,{width:VIDEO_WIDTH,height:VIDEO_HEIGHT,aspectRatio:channelProfile?.visual?.aspectRatio||mediaSettings.imageAspectRatio||'9:16',imageSize:mediaSettings.imageSize}); }
               catch(providerError){ const e=new Error(`Scene ${sceneNumber} clean-image regeneration ${qaAttempt+1}/${maxOcrRetries} failed at the image provider (OCR itself worked): ${providerError.message}`); e.code='IMAGE_PROVIDER_FAILED'; throw e; }
               if(retryPath && path.resolve(String(retryPath))!==path.resolve(p)) await fs.copyFile(String(retryPath),p);
               usedPrompt=retryPrompt;
@@ -409,7 +435,7 @@ async function processJob(job){
             mode:expectedMode,
             resolution:`${normalized.width}x${normalized.height}`,
             normalized:normalized.normalized,
-            provider:mediaSettings.mockMode?'mock':selectedImageProvider,
+            provider:mediaSettings.mockMode?'mock':(lastImageProvider()||selectedImageProvider),
             model:selectedImageMeta?.model || env.imageModel,
             sizeBytes:asset.sizeBytes,
             valid:true,
@@ -421,13 +447,13 @@ async function processJob(job){
           };
         },{
           mediaMode:expectedMode,
-          provider:mediaSettings.mockMode?'mock':selectedImageProvider,
+          provider:mediaSettings.mockMode?'mock':(lastImageProvider()||selectedImageProvider),
           model:selectedImageMeta?.model || env.imageModel,
           reused:false,
           regenerated:true,
           requestedOutput:p
         });
-        assetDetails.push({sceneNumber,path:p,mode:expectedMode,sizeBytes:generated.sizeBytes,valid:true,generatedAt:new Date(),reused:false,prompt:sceneImagePrompt,sourceVisualPrompt:scene.visualPrompt,visualDirectorPlan:visualDirectorPlan?.scenes?.find(x=>Number(x.sceneNumber)===Number(sceneNumber))||null,resolution:`${VIDEO_WIDTH}x${VIDEO_HEIGHT}`});
+        assetDetails.push({sceneNumber,path:p,mode:expectedMode,sizeBytes:generated.sizeBytes,valid:true,generatedAt:new Date(),reused:false,prompt:sceneImagePrompt,promptKey,imagePromptUsed:String(generated.imagePromptUsed||sceneImagePrompt).slice(0,2000),currentPrompt:sceneImagePrompt,stale:false,sourceVisualPrompt:scene.visualPrompt,visualDirectorPlan:visualDirectorPlan?.scenes?.find(x=>Number(x.sceneNumber)===Number(sceneNumber))||null,resolution:`${VIDEO_WIDTH}x${VIDEO_HEIGHT}`});
         if(forceThisScene){
           await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:`Scene ${sceneNumber} regenerated to a versioned asset: ${path.basename(p)}. The renderer will use this exact new file.`,level:'info'}}});
         }
@@ -436,7 +462,10 @@ async function processJob(job){
         const normalized=await normalizeSceneImage(p);
         const asset=await validateImageAsset(p,expectedMode,sceneNumber);
         await traceStage(jobId,`SCENE_${i+1}_IMAGE`,{sceneNumber,visualPrompt:sceneImagePrompt,sourceVisualPrompt:scene.visualPrompt,narration:scene.narration,onScreenText:scene.onScreenText},async()=>({path:p,mode:expectedMode,sizeBytes:asset.sizeBytes,valid:true,reused:true,resolution:`${normalized.width}x${normalized.height}`,normalized:normalized.normalized,textQa:reuseTextQa?{checked:true,suspicious:reuseTextQa.suspicious,reason:reuseTextQa.reason,strongWords:reuseTextQa.strongWords||[],reviewWords:reuseTextQa.reviewWords||[],needsVisualReview:Boolean(reuseTextQa.needsVisualReview),engine:reuseTextQa.engine}:{checked:false,reason:expectedMode==='real'?'not_checked':'mock_image'}}),{mediaMode:expectedMode,provider:selectedImageProvider,model:selectedImageMeta?.model || env.imageModel,reused:true});
-        assetDetails.push({sceneNumber,path:p,mode:expectedMode,sizeBytes:asset.sizeBytes,valid:true,generatedAt:new Date(),reused:true,prompt:sceneImagePrompt,sourceVisualPrompt:scene.visualPrompt,resolution:`${VIDEO_WIDTH}x${VIDEO_HEIGHT}`,normalized:normalized.normalized});
+        // Keep the record of what this image was actually made from (older assets
+        // have no promptKey: their origin is unknown, so they are marked as possibly stale).
+        const madeFor=savedAsset?.promptKey?savedAsset:null;
+        assetDetails.push({sceneNumber,path:p,mode:expectedMode,sizeBytes:asset.sizeBytes,valid:true,generatedAt:madeFor?.generatedAt||savedAsset?.generatedAt||null,reused:true,prompt:madeFor?.prompt||null,promptKey:madeFor?.promptKey||null,imagePromptUsed:madeFor?.imagePromptUsed||null,currentPrompt:sceneImagePrompt,stale:!madeFor||madeFor.promptKey!==promptKey,sourceVisualPrompt:scene.visualPrompt,resolution:`${VIDEO_WIDTH}x${VIDEO_HEIGHT}`,normalized:normalized.normalized});
         await updateJob(jobId,25+Math.round(((i+1)/story.scenes.length)*30),'ASSETS_GENERATING',`Reused valid scene ${i+1}/${story.scenes.length}.`);
       }
       sceneFiles.push(p);
@@ -454,15 +483,33 @@ async function processJob(job){
     const sceneDurations=[];
     await updateJob(jobId,61,'VOICE','Generating narration.');
     await traceStage(jobId,'VOICE_GENERATION',{sceneCount:story.scenes.length,narrationChars:story.scenes.map(s=>s.narration).join(' ').length,language:series.language||'English',outputPath:audio,sceneOutputDir:sceneAudioDir},async()=>{
+      const speechLanguage=channelProfile?.narration?.language||series.language||'English';
+      // Narration priority: the whole video is spoken by ONE provider. If the main one
+      // fails, the next provider re-records every scene (never a mix of voices).
+      const ttsChain=mediaSettings.mockMode?[{id:'mock',name:'Mock'}]:await mediaChain('tts');
+      if(!ttsChain.length)throw new Error('No narration provider is set up. Add one in Settings → Narration.');
+      let speechVoice,remade=[],voiceFailures=[];
+      for(let vi=0;vi<ttsChain.length;vi++){
+       const voiceProvider=ttsChain[vi];
+       sceneAudioFiles.length=0;sceneDurations.length=0;remade=[];
+       try{
+        await mediaOverride.run({...(mediaOverride.getStore()||{}),ttsProvider:voiceProvider.id},async()=>{
+      speechVoice=mediaSettings.mockMode?{provider:'mock',model:'',voice:''}:await currentSpeechVoice(channelProfile?.narration||{});
+      const signature=speechSignature({mock:mediaSettings.mockMode,...speechVoice,language:speechLanguage});
       for(let i=0;i<story.scenes.length;i++){
         await assertNotCancelled(jobId,video._id,attempt);
         const sceneAudio=path.join(sceneAudioDir,`scene-${String(i+1).padStart(3,'0')}.mp3`);
+        const text=story.scenes[i].narration;
         let ready=false;
         try{const st=await fs.stat(sceneAudio);ready=st.size>100;}catch{}
+        // Reuse saved narration only when the same voice made it from the same words,
+        // so every scene of a video has one voice.
+        if(ready){const note=await readNarrationNote(sceneAudio);if(!canReuseNarration(note,{signature,text})){remade.push(`${i+1} (${reuseProblem(note,{signature,text})})`);ready=false;}}
         if(!ready){
           await fs.rm(sceneAudio,{force:true}).catch(()=>{});
-          if(mediaSettings.mockMode) await generateMockSpeech(story.scenes[i].narration,sceneAudio);
-          else await generateSpeech(story.scenes[i].narration,sceneAudio,channelProfile?.narration?.language||series.language||'English',channelProfile?.narration||{});
+          if(mediaSettings.mockMode) await generateMockSpeech(text,sceneAudio);
+          else await generateSpeech(text,sceneAudio,speechLanguage,channelProfile?.narration||{});
+          await writeNarrationNote(sceneAudio,{signature,text,provider:speechVoice.provider,voice:speechVoice.voice}).catch(()=>{});
         }
         const duration=await getAudioDuration(sceneAudio);
         sceneAudioFiles.push(sceneAudio);
@@ -471,6 +518,17 @@ async function processJob(job){
         // LLM durations must not drive captions after real narration is rendered.
         if(story.scenes[i]) story.scenes[i].durationSec=duration;
       }
+        });
+        if(vi>0)await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'info',message:`Narration recorded by ${voiceProvider.name} (backup provider #${vi+1}) for all scenes.`}}});
+        break;
+       }catch(e){
+        if(e?.code==='JOB_CANCELLED')throw e;
+        voiceFailures.push(`${voiceProvider.name}: ${String(e?.message||e).slice(0,200)}`);
+        if(vi===ttsChain.length-1)throw ttsChain.length>1?new Error(`All narration providers failed — ${voiceFailures.join(' | ')}`):e;
+        await GenerationJob.findByIdAndUpdate(jobId,{$set:{lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),level:'warning',message:`Narration provider ${voiceProvider.name} failed (${String(e?.message||e).replace(/\s+/g,' ').slice(0,160)}). Switching the whole video to ${ttsChain[vi+1].name}.`}}});
+       }
+      }
+      if(remade.length)await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'info',message:`Narration remade for scene ${remade.join(', ')} so the whole video uses one voice (${speechVoice.provider}${speechVoice.voice?` / ${speechVoice.voice}`:''}).`}}});
       if(typeof story.save==='function') await story.save();
       return {path:audio,sceneAudioFiles,sceneDurations,sceneCount:sceneAudioFiles.length,mode:mediaSettings.mockMode?'mock':'real'};
     },{mediaMode:mediaSettings.mockMode?'mock':'real',perScene:true,ttsModel:mediaSettings.ttsModel,ttsVoice:mediaSettings.ttsVoice});
@@ -482,6 +540,14 @@ async function processJob(job){
     if(sceneFiles.length===0||sceneFiles.length!==story.scenes.length) throw new Error(`No complete scene asset set is available for video rendering (${sceneFiles.length}/${story.scenes.length}).`);
     for(let i=0;i<sceneFiles.length;i++) await validateImageAsset(sceneFiles[i],expectedMode,i+1);
     await Video.findByIdAndUpdate(video._id,{$set:{media:{scenes:sceneFiles,audio,subtitles:srt}}});
+    // Scene changed from Telegram: stop here and ask before rendering.
+    if(job.payload?.confirmBeforeRender){
+      const n=job.payload.forceRegenerateAllScenes?0:Number(job.payload.sceneNumber||job.payload.forceRegenerateSceneNumber||0);
+      await Video.findByIdAndUpdate(video._id,{$set:{pendingSceneEdit:{sceneNumber:n,allScenes:Boolean(job.payload.forceRegenerateAllScenes),narrationChanged:Boolean(job.payload.narrationChanged),imageChanged:Boolean(job.payload.forceRegenerateSceneNumber),chatId:job.payload.requestedByChat||null,jobId:String(jobId),at:new Date()}}});
+      await updateJob(jobId,100,'SCENE_REVIEW',`${n?`Scene ${n}`:'All scene images'} rebuilt. Waiting for confirmation before rendering.`,'COMPLETED',{completedAt:new Date(),lastHeartbeatAt:new Date()});
+      await setVideoStatus(video._id,'SCENE_REVIEW',`${n?`Scene ${n}`:'All scene images'} rebuilt. Confirm to render the video.`,'clear',attempt);
+      return;
+    }
     await setVideoStatus(video._id,'VIDEO_RENDERING','Rendering video.','clear',attempt);
     await updateJob(jobId,65,'VIDEO_RENDERING','Rendering vertical MP4 with FFmpeg.');
     // Profile caption settings override the global defaults in Settings → Output.
@@ -515,7 +581,7 @@ async function processJob(job){
       await GenerationJob.findByIdAndUpdate(jobId,{$set:{status:'FAILED',error:e.message,failedAt:new Date(),lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),message:e.message,level:'error'}}});
       if(video?._id) await setVideoStatus(video._id,'FAILED',e.message,'set',attempt);
     }
-  }finally{busy=false;currentJobId=null;}
+  }finally{aiEvents.off('progress',onAiProgress);busy=false;currentJobId=null;}
 }
 
 export function startWorker(){

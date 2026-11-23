@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { publicAccount } from "../services/youtube/youtubeAccount.js";
+import { publicSettings as publicTelegram } from "../services/telegram/telegramFormat.js";
 
 const schema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
@@ -14,6 +15,10 @@ const schema = new mongoose.Schema({
   // This profile's own YouTube OAuth client + channel connection. Secret and
   // tokens are encrypted (services/secretBox.js) and never returned by the API.
   youtubeAccount: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // This profile's Telegram notifications (own bot token, chats, events). Token encrypted.
+  telegram: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // Automatic create + upload schedule (services/autopilot/autopilotRules.js).
+  autopilot: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   rules: { type: [String], default: [] },
   active: { type: Boolean, default: true },
   channelResearch: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -27,6 +32,6 @@ const schema = new mongoose.Schema({
 }, { timestamps: true });
 
 // API responses only ever see the public view of the YouTube account.
-schema.set("toJSON", { transform: (_doc, ret) => { ret.youtubeAccount = publicAccount(ret.youtubeAccount); return ret; } });
+schema.set("toJSON", { transform: (_doc, ret) => { ret.youtubeAccount = publicAccount(ret.youtubeAccount); ret.telegram = publicTelegram(ret.telegram); return ret; } });
 
 export default mongoose.model("Series", schema);

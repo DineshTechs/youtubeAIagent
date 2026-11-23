@@ -16,7 +16,10 @@ rem Tests are not run here - use run-tests.bat separately.
 echo.
 
 git add -A
-git diff --cached --name-only | findstr /i /r "\.env$ \.env\. \.pem$ \.key$" >nul && (echo [ERROR] A secrets file is staged. Nothing was pushed. & git reset -q & pause & exit /b 1)
+rem .env.example only holds empty placeholders, so it is allowed; any other .env / key file is refused.
+git diff --cached --name-only | findstr /i /r "\.env$ \.env\. \.pem$ \.key$" | findstr /v /i /r "\.env\.example$" > "%TEMP%\yta-secrets.txt"
+for %%F in ("%TEMP%\yta-secrets.txt") do if %%~zF GTR 0 (echo [ERROR] A secrets file is staged. Nothing was pushed: & type "%TEMP%\yta-secrets.txt" & del "%TEMP%\yta-secrets.txt" & git reset -q & pause & exit /b 1)
+del "%TEMP%\yta-secrets.txt" >nul 2>nul
 
 git diff --cached --quiet
 if errorlevel 1 (

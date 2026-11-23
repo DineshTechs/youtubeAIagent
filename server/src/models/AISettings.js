@@ -2,14 +2,17 @@ import mongoose from 'mongoose';
 
 const schema = new mongoose.Schema({
   key: { type: String, unique: true, default: 'global' },
-  activeProvider: { type: String, enum: ['gemini', 'groq', 'cerebras', 'openai', 'mock'], default: 'gemini' },
+  // Encrypted provider keys entered in Settings (services/ai/ttsKeys.js). Never returned by the API.
+  secrets: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // First provider of text.priority (kept for older code). Any script provider id.
+  activeProvider: { type: String, default: 'gemini' },
   text: {
-    models: {
-      gemini: { type: String, default: 'gemini-3.8-flash' },
-      groq: { type: String, default: 'openai/gpt-oss-20b' },
-      cerebras: { type: String, default: 'gpt-oss-120b' },
-      openai: { type: String, default: 'gpt-5.1' }
-    },
+    // Model per script provider. Mixed so newly added providers (OpenRouter, Mistral,
+    // NVIDIA…) are saved too; a fixed list silently dropped their model choices.
+    models: { type: mongoose.Schema.Types.Mixed, default: () => ({ gemini: 'gemini-3.8-flash', groq: 'openai/gpt-oss-20b', cerebras: 'gpt-oss-120b', openai: 'gpt-5.1' }) },
+    // Order in which script providers are tried; the next one is used when one fails.
+    priority: { type: [String], default: undefined },
+    fallbackEnabled: { type: Boolean, default: true },
     temperature: { type: Number, default: 0.7, min: 0, max: 2 },
     maxOutputTokens: { type: Number, default: 2600, min: 100, max: 20000 }
   },
@@ -30,20 +33,33 @@ const schema = new mongoose.Schema({
     imageSize: { type: String, default: '1K' },
     imageAspectRatio: { type: String, default: '9:16' },
     imageQuality: { type: String, enum: ['standard', 'high'], default: 'high' },
-    ttsProvider: { type: String, enum: ['groq', 'openai', 'gemini', 'mock'], default: 'groq' },
+    ttsProvider: { type: String, enum: ['groq', 'openai', 'gemini', 'azure', 'google', 'elevenlabs', 'aiawaaz', 'mock'], default: 'groq' },
     ttsModels: {
       groq: { type: String, default: 'canopylabs/orpheus-v1-english' },
       openai: { type: String, default: 'gpt-4o-mini-tts' },
-      gemini: { type: String, default: 'gemini-3.8-flash-tts' }
+      gemini: { type: String, default: 'gemini-3.8-flash-tts' },
+      azure: { type: String, default: 'neural' },
+      google: { type: String, default: 'wavenet' },
+      elevenlabs: { type: String, default: 'eleven_multilingual_v2' },
+      aiawaaz: { type: String, default: 'mcp' }
     },
     ttsVoices: {
       groq: { type: String, default: 'hannah' },
       openai: { type: String, default: 'coral' },
-      gemini: { type: String, default: 'Kore' }
+      gemini: { type: String, default: 'Kore' },
+      azure: { type: String, default: 'hi-IN-SwaraNeural' },
+      google: { type: String, default: 'hi-IN-Wavenet-A' },
+      elevenlabs: { type: String, default: 'JBFqnCBsd6RMkjVDRZzb' },
+      aiawaaz: { type: String, default: '' }
     },
     generationEnabled: { type: Boolean, default: true },
     mockMode: { type: Boolean, default: false },
-    pollinationsSafe: { type: Boolean, default: false }
+    pollinationsSafe: { type: Boolean, default: false },
+    // Priority order (enabled providers) and whether to try the next one on failure.
+    imagePriority: { type: [String], default: undefined },
+    imageFallbackEnabled: { type: Boolean, default: true },
+    ttsPriority: { type: [String], default: undefined },
+    ttsFallbackEnabled: { type: Boolean, default: true }
   },
   video: {
     width: { type: Number, default: 1080, min: 360, max: 2160 },

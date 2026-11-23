@@ -5,6 +5,7 @@ import { studyChannel } from "../services/youtubeChannelResearch.js";
 import GenerationJob from "../models/GenerationJob.js";
 import { removeSeries, ProfileRemovalError } from "../services/seriesRemoval.js";
 import { publicSeries } from "../services/youtube/youtubeAccount.js";
+import { normalizeAutopilot } from "../services/autopilot/autopilotRules.js";
 
 export async function listSeries(req, res, next) {
   try { res.json(await Series.find({ archived: { $ne: true } }).sort({ active: -1, updatedAt: -1 })); } catch (e) { next(e); }
@@ -12,12 +13,12 @@ export async function listSeries(req, res, next) {
 
 export async function createSeries(req, res, next) {
   // YouTube credentials are only set through PUT /api/youtube/account/:seriesId.
-  try { const { youtubeAccount, ...body } = req.body || {}; res.status(201).json(await Series.create(body)); } catch (e) { next(e); }
+  try { const { youtubeAccount, telegram, ...body } = req.body || {}; res.status(201).json(await Series.create(body)); } catch (e) { next(e); }
 }
 
 export async function updateSeries(req, res, next) {
   try {
-    const allowed={name:req.body.name,premise:req.body.premise,niche:req.body.niche,targetAge:req.body.targetAge,language:req.body.language,visualStyle:req.body.visualStyle,channelProfile:req.body.channelProfile,uploadSettings:req.body.uploadSettings,rules:req.body.rules,active:req.body.active,topicIdeas:req.body.topicIdeas,channelResearch:req.body.channelResearch,contentStrategy:req.body.contentStrategy};
+    const allowed={name:req.body.name,premise:req.body.premise,niche:req.body.niche,targetAge:req.body.targetAge,language:req.body.language,visualStyle:req.body.visualStyle,channelProfile:req.body.channelProfile,uploadSettings:req.body.uploadSettings,autopilot:req.body.autopilot===undefined?undefined:normalizeAutopilot(req.body.autopilot,{timezone:req.body.uploadSettings?.timezone}),rules:req.body.rules,active:req.body.active,topicIdeas:req.body.topicIdeas,channelResearch:req.body.channelResearch,contentStrategy:req.body.contentStrategy};
     Object.keys(allowed).forEach(k=>allowed[k]===undefined&&delete allowed[k]);
     const series=await Series.findByIdAndUpdate(req.params.id,{$set:allowed},{new:true,runValidators:true});
     if(!series)return res.status(404).json({error:'Series not found'});

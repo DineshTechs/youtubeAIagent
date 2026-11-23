@@ -1,5 +1,6 @@
 import {profileDirectives} from '../channelProfile.js';
 import {STORY_VISUAL_PROMPT_RULE} from '../../utils/visualPlan.js';
+import {aiProgress} from './aiEvents.js';
 import { GoogleGenAI } from '@google/genai';
 import { env } from '../../config/env.js';
 
@@ -51,6 +52,7 @@ export class GeminiProvider {
    const deadline=createRequestDeadline(requestTimeoutMs,label);
    try{
     console.log(`[Gemini] ${label} attempt ${attempt}/${attempts} (timeout ${Math.round(requestTimeoutMs/1000)}s).`);
+    aiProgress(`Waiting for Gemini (${this.model}) — ${label}${attempt>1?`, attempt ${attempt}/${attempts}`:''}; this can take up to ${Math.round(requestTimeoutMs/60000*10)/10} min.`,{provider:'gemini',label,attempt,attempts});
     const config={responseMimeType:'application/json',maxOutputTokens:outputTokens,temperature:this.temperature,thinkingConfig:{thinkingLevel:'low'},abortSignal:deadline.signal,httpOptions:{timeout:requestTimeoutMs+5000}};
     // Gemini 3.x does not support candidateCount; only add a schema when one is real.
     if(responseSchema) config.responseSchema=responseSchema;
@@ -70,6 +72,7 @@ export class GeminiProvider {
     }
     const ms=timedOut?Math.min(5000,2000+Math.floor(Math.random()*1000)):delay(attempt-1);
     console.warn(`[Gemini] ${label} attempt ${attempt} failed with ${timedOut?'timeout':(statusCode(e)||'transient error')}. Retrying in ${Math.round(ms/100)/10}s.`);
+    aiProgress(`Gemini ${label}: ${timedOut?`no answer after ${Math.round(requestTimeoutMs/1000)}s`:statusCode(e)===429?'busy (HTTP 429 rate limit)':`error ${statusCode(e)||''}`.trim()}; trying again in ${Math.round(ms/1000)}s.`,{provider:'gemini',label,attempt,attempts,level:'warning'});
     await sleep(ms);
    }finally{
     deadline.clear();

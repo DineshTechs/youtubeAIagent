@@ -96,11 +96,11 @@ export function buildUploadMetadata({story={},video={},settings,profileName='',o
 }
 
 // Wall-clock parts of `date` in `timeZone`.
-function zoned(date,timeZone){
+export function zoned(date,timeZone){
   const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone,hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(date).map(p=>[p.type,p.value]));
   return {y:+parts.year,m:+parts.month,d:+parts.day,h:+parts.hour,mi:+parts.minute,s:+parts.second};
 }
-function zonedToUtc(y,m,d,h,mi,timeZone){
+export function zonedToUtc(y,m,d,h,mi,timeZone){
   let guess=Date.UTC(y,m-1,d,h,mi);
   for(let i=0;i<2;i++){const z=zoned(new Date(guess),timeZone);const asUtc=Date.UTC(z.y,z.m-1,z.d,z.h,z.mi,z.s);guess+=Date.UTC(y,m-1,d,h,mi)-asUtc;}
   return new Date(guess);

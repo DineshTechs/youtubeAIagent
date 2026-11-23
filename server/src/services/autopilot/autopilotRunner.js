@@ -1,0 +1,116 @@
+// Autopilot loop (runs every minute in the API process, next to the worker):
+//   due slot -> generate -> automatic checks -> approve -> upload (scheduled for the slot).
+// All actions go through this app's own REST API, so the same rules apply as in the dashboard.
+import Series from '../../models/Series.js';
+import Video from '../../models/Video.js';
+import GenerationJob from '../../models/GenerationJob.js';
+import AutopilotRun from '../../models/AutopilotRun.js';
+import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest} from './autopilotRules.js';
+import {internalApi} from '../telegram/botRunner.js';
+import {notify} from '../telegram/notifier.js';
+import {readiness} from '../youtube/youtubeAccount.js';
+
+const MAX_GENERATION_ATTEMPTS=2, MAX_UPLOAD_ATTEMPTS=3, GENERATION_TIMEOUT_MS=4*3600*1000;
+let timer=null,busy=false;
+const settingsFor=s=>normalizeAutopilot(s.autopilot,{timezone:s.uploadSettings?.timezone});
+const slotLabel=(d,tz)=>new Date(d).toLocaleString('en-IN',{timeZone:tz||'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'});
+
+async function note(run,set,message){
+  await AutopilotRun.updateOne({_id:run._id},{$set:set,...(message?{$push:{log:{$each:[{at:new Date(),message}],$slice:-50}}}:{})});
+}
+async function problem(run,series,status,message){
+  await note(run,{status,error:message,nextActionAt:null},message);
+  notify('autopilot',{profileId:String(series._id),profileName:series.name,videoId:run.videoId?String(run.videoId):undefined,title:`Autopilot: slot ${slotLabel(run.slotAt,series.uploadSettings?.timezone)}`,message});
+}
+
+async function startGeneration(run,series){
+  const j=await internalApi('POST','/agent/generate',{seriesId:String(series._id)});
+  await note(run,{jobId:j.jobId,status:'GENERATING',nextActionAt:null},`Video generation started (job ${j.jobId}).`);
+}
+
+async function skipSlot(series,slotAt,message){
+  try{await AutopilotRun.create({seriesId:series._id,slotAt,status:'SKIPPED',error:message,log:[{message}]});}
+  catch(e){if(e?.code===11000)return;throw e;}
+  notify('autopilot',{profileId:String(series._id),profileName:series.name,title:`Autopilot: slot ${slotLabel(slotAt,series.uploadSettings?.timezone)}`,message});
+}
+
+export async function createRun(series,slotAt,{manual=false}={}){
+  let run;
+  try{run=await AutopilotRun.create({seriesId:series._id,slotAt,manual,log:[{message:`${manual?'Manual run':'Slot'} for ${slotLabel(slotAt,series.uploadSettings?.timezone)} created.`}]});}
+  catch(e){if(e?.code===11000)return null;throw e;}
+  try{await startGeneration(run,series);}catch(e){await problem(run,series,'FAILED',`Could not start generation: ${e.message}`);}
+  return run;
+}
+
+async function advanceGenerating(run,series,settings){
+  const job=run.jobId?await GenerationJob.findById(run.jobId).lean():null;
+  if(!job)return problem(run,series,'FAILED','Generation job is missing.');
+  if(job.videoId&&String(job.videoId)!==String(run.videoId||''))await note(run,{videoId:job.videoId});
+  const video=job.videoId?await Video.findById(job.videoId).lean():null;
+  if(['QUEUED','RUNNING'].includes(job.status)){
+    if(Date.now()-new Date(run.createdAt).getTime()>GENERATION_TIMEOUT_MS)return problem(run,series,'FAILED','Generation took longer than 4 hours.');
+    return;
+  }
+  if(video?.status==='APPROVED')return note(run,{status:'APPROVED',nextActionAt:null},'Video was approved.');
+  if(video?.status==='AWAITING_APPROVAL'){
+    const issues=autopilotProblems(video,settings);
+    if(issues.length)return problem(run,series,'NEEDS_ATTENTION',`Not published automatically: ${issues.join(' ')} Review it in the dashboard or Telegram.`);
+    await internalApi('POST',`/videos/${video._id}/visual-review`,{imagesMatch:true,subtitlesReadable:true,ageAppropriate:true});
+    await internalApi('POST',`/videos/${video._id}/approve`);
+    await Video.updateOne({_id:video._id},{$push:{statusHistory:{status:'APPROVED',message:`Approved automatically by Autopilot (QA ${video.qa?.score ?? 'n/a'}/100).`,at:new Date(),attempt:0,source:'AUTOPILOT'}}});
+    return note(run,{status:'APPROVED',nextActionAt:null},`Passed automatic checks (QA ${video.qa?.score ?? 'n/a'}/100) and was approved.`);
+  }
+  // Failed or cancelled: one more attempt, then give up.
+  if(job.status==='FAILED'||job.status==='CANCELLED'||['FAILED','CANCELLED'].includes(video?.status)){
+    if(run.attempts>=MAX_GENERATION_ATTEMPTS)return problem(run,series,'FAILED',`Generation failed after ${run.attempts} attempts: ${job.error||video?.error||job.status}`);
+    try{
+      const r=video?await internalApi('POST',`/videos/${video._id}/retry`):await internalApi('POST','/agent/generate',{seriesId:String(series._id)});
+      await note(run,{jobId:r.jobId,attempts:run.attempts+1},`Attempt ${run.attempts} failed (${String(job.error||video?.error||job.status).slice(0,200)}); retrying.`);
+    }catch(e){return problem(run,series,'FAILED',`Retry failed: ${e.message}`);}
+    return;
+  }
+  // Finished but in another state (e.g. waiting for scene review).
+  if(job.status==='COMPLETED'&&video)return problem(run,series,'NEEDS_ATTENTION',`Video ended in status ${video.status}; it needs a manual decision.`);
+}
+
+async function advanceApproved(run,series,settings){
+  const videoId=run.videoId;
+  if(!videoId)return problem(run,series,'FAILED','No video to upload.');
+  const body=run.manual?{privacyStatus:settings.visibility}:uploadRequest(run.slotAt,settings);
+  try{
+    const r=await internalApi('POST',`/youtube/publish/${videoId}`,body);
+    await note(run,{status:r.status==='SCHEDULED'?'SCHEDULED':'PUBLISHED',youtubeVideoId:r.youtubeVideoId,error:null,nextActionAt:null},r.status==='SCHEDULED'?`Uploaded; goes public at ${slotLabel(run.slotAt,settings.timezone)} (${r.url}).`:`Uploaded as ${r.privacyStatus||body.privacyStatus} (${r.url}).`);
+  }catch(e){
+    const attempts=run.uploadAttempts+1;
+    if(attempts>=MAX_UPLOAD_ATTEMPTS)return problem(run,series,'NEEDS_ATTENTION',`YouTube upload failed ${attempts} times: ${e.message}`);
+    await note(run,{uploadAttempts:attempts,error:e.message,nextActionAt:new Date(Date.now()+10*60000)},`Upload attempt ${attempts} failed (${e.message}); retrying in 10 minutes.`);
+  }
+}
+
+export async function tick(now=new Date()){
+  if(busy)return;busy=true;
+  try{
+    const profiles=await Series.find({archived:{$ne:true},'autopilot.enabled':true}).select('name autopilot uploadSettings youtubeAccount').lean();
+    for(const series of profiles){
+      const settings=settingsFor(series);
+      const yt=readiness(series.youtubeAccount);
+      const ytReady=yt.configured&&yt.connected&&yt.publishEnabled;
+      for(const slot of dueSlots(settings,now)){
+        if(!ytReady){await skipSlot(series,slot,`Skipped: YouTube is not ready for this profile (${yt.problems.join(' ')})`).catch(()=>{});continue;}
+        await createRun(series,slot).catch(e=>console.error('Autopilot create failed:',e.message));
+      }
+    }
+    const runs=await AutopilotRun.find({status:{$in:['GENERATING','APPROVED']},$or:[{nextActionAt:null},{nextActionAt:{$lte:now}}]}).lean();
+    for(const run of runs){
+      try{
+        const series=await Series.findById(run.seriesId).select('name autopilot uploadSettings archived').lean();
+        if(!series||series.archived){await note(run,{status:'SKIPPED',error:'Profile was deleted.'},'Profile was deleted.');continue;}
+        const settings=settingsFor(series);
+        if(run.status==='GENERATING')await advanceGenerating(run,series,settings);
+        else if(run.status==='APPROVED')await advanceApproved(run,series,settings);
+      }catch(e){console.error(`Autopilot run ${run._id} failed:`,e.message);await note(run,{error:e.message},`Error: ${e.message}`).catch(()=>{});}
+    }
+  }catch(e){console.error('Autopilot tick failed:',e.message);}
+  finally{busy=false;}
+}
+export function startAutopilot(){if(timer)return;setTimeout(()=>tick(),15000);timer=setInterval(()=>tick(),60000);timer.unref?.();}

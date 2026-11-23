@@ -4,8 +4,10 @@
 // Secrets are encrypted at rest and never leave the server: publicAccount() is
 // the only shape the API returns.
 import {encryptSecret,decryptSecret} from '../secretBox.js';
+import {publicSettings as publicTelegram} from '../telegram/telegramFormat.js';
 
-export function defaultRedirectUri(port=Number(process.env.PORT||4000)){return `http://127.0.0.1:${port}/api/youtube/callback`;}
+// On a server set PUBLIC_URL (e.g. https://agent.example.com); on your PC it is the local address.
+export function defaultRedirectUri(port=Number(process.env.PORT||4000)){const pub=String(process.env.PUBLIC_URL||"").trim().replace(/\/+$/,"");return pub?`${pub}/api/youtube/callback`:`http://127.0.0.1:${port}/api/youtube/callback`;}
 const clean=v=>String(v??'').trim();
 
 export function credentialsOf(acc={}){
@@ -58,4 +60,4 @@ export function withTokens(acc={},tokens,channel={}){
 }
 export function disconnected(acc={}){return {...acc,tokens:null,channelId:null,channelTitle:null,connectedAt:null,lastError:null};}
 // Strips youtubeAccount secrets from a plain series object (for .lean() results).
-export function publicSeries(series){if(!series||typeof series!=='object')return series;const {youtubeAccount,...rest}=series;return {...rest,youtubeAccount:publicAccount(youtubeAccount)};}
+export function publicSeries(series){if(!series||typeof series!=='object')return series;const {youtubeAccount,telegram,...rest}=series;return {...rest,youtubeAccount:publicAccount(youtubeAccount),telegram:publicTelegram(telegram)};}

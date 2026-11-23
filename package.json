@@ -7,7 +7,9 @@
     "client"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\""
+    "dev": "concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
+    "start": "concurrently -n api,web \"npm run start --workspace server\" \"npm run dev --workspace client\"",
+    "build": "npm run build --workspace client"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

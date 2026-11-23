@@ -1,4 +1,4 @@
-import { stripEditingDirections, isEnglishVisualText, englishStillStyle } from './visualPlan.js';
+import { stripEditingDirections, isEnglishVisualText, englishStillStyle, removeSequenceRequests, audienceLook, needsAudienceLook } from './visualPlan.js';
 // Prompt length limits per image provider. Cloudflare Workers AI (FLUX)
 // rejects prompts longer than 2048 characters with error 5006. A small margin
 // is kept. Providers not listed have no practical limit for our prompts.
@@ -98,21 +98,31 @@ export function cleanVisualText(value, max = 420) {
 
 const NO_TEXT_RULE = 'ABSOLUTELY NO VISIBLE TEXT OR GRAPHIC BRANDING: no letters, words, numbers, pseudo-writing, gibberish, fake glyphs, text-like strokes, decorative marks resembling writing, captions, subtitles, typography, labels, signage, logos, icons resembling platform brands, watermarks, signatures, QR codes, UI controls, app interfaces or decorative symbols. Screens, books, signs, packaging and labels must be blank, plain and unmarked. Do not invent text-like marks. Render a clean photorealistic/illustrated scene only. All captions and titles are added separately by the video editor.';
 
+function characterContextOf(characters) {
+  return (characters || [])
+    .map(c => cleanVisualText(`${c.name}, ${c.appearance || 'consistent appearance'}`, 160))
+    .filter(Boolean).join('; ').slice(0, 260);
+}
+
 export function buildSceneImagePrompt({ scene = {}, index = 0, visualPlan = null, characters = [], channelProfile = null, series = {}, visualDirector = {}, promptStyle = 'standard' } = {}) {
   const plan = visualPlan?.scenes?.find(x => Number(x.sceneNumber) === Number(scene.sceneNumber || index + 1));
   // Image models (FLUX especially) only understand English. Prefer an English
   // description: the scene's own prompt if English, else the Visual Director's.
   const ownBrief = cleanVisualText(scene.visualPrompt, 650);
   const planBrief = cleanVisualText(plan?.visualPrompt, 650);
-  const visualBrief = isEnglishVisualText(ownBrief) ? ownBrief : (isEnglishVisualText(planBrief) ? planBrief : ownBrief);
+  // One moment only: collages/panels/"then" sequences become a white grid of tiny photos.
+  const visualBrief = removeSequenceRequests(isEnglishVisualText(ownBrief) ? ownBrief : (isEnglishVisualText(planBrief) ? planBrief : ownBrief));
   const meaning = cleanVisualText(plan?.narrationMeaning, 220);
+  const keyIdea = cleanVisualText(plan?.keyIdea, 80);
   const planVisuals = plan
-    ? [plan.subject, plan.action, plan.setting, plan.importantObjects, plan.emotion, plan.camera, plan.composition]
-        .map(v => cleanVisualText(v, 180)).filter(Boolean).join('. ')
+    ? removeSequenceRequests([plan.subject, plan.action, plan.setting, plan.importantObjects, plan.emotion, plan.camera]
+        .map(v => cleanVisualText(v, 180)).filter(Boolean).join('. '))
     : '';
-  const characterContext = (characters || [])
-    .map(c => cleanVisualText(`${c.name}, ${c.appearance || 'consistent appearance'}`, 160))
-    .filter(Boolean).join('; ').slice(0, 260);
+  // People and places that fit the audience (e.g. Indian people for a Hindi channel),
+  // unless the scene already says who/where.
+  const look = audienceLook(channelProfile || {}, series || {});
+  const lookLine = look && needsAudienceLook(`${visualBrief} ${characterContextOf(characters)}`) ? look : '';
+  const characterContext = characterContextOf(characters);
   const profileStyle = channelProfile?.visual?.style || series?.visualStyle || 'cinematic, high-quality visuals';
   const rawStyle = cleanVisualText(isEnglishVisualText(visualPlan?.visualStyle) ? visualPlan.visualStyle : (promptStyle === 'flux' ? englishStillStyle(profileStyle) : profileStyle), 120) || 'cinematic, high-quality visuals';
   const style = /(cartoon|chibi|anime|comic|flat|illustrat|kawaii|storybook|clay|2d|3d animation|animated)/i.test(rawStyle)
@@ -123,15 +133,15 @@ export function buildSceneImagePrompt({ scene = {}, index = 0, visualPlan = null
   const aspect = channelProfile?.visual?.aspectRatio || '9:16';
   if (promptStyle === 'flux') {
     const fluxClean = v => String(v || '').replace(FLUX_PRINTED_OBJECTS, 'plain framed artwork').replace(/\bnewspapers?\b/gi, 'folded paper').replace(FLUX_TEXT_INVITING, ' ').replace(/\s+([,.;])/g, '$1').replace(/([,.;])\1+/g, '$1').replace(/\s+/g, ' ').trim();
+    // The scene description leads; the plan's field list is only used when there is
+    // no description (as fragments it pulled images toward odd composites).
     const subject = fluxClean(visualBrief || planVisuals || 'A clear, expressive moment with a recognizable subject and setting');
-    const details = planVisuals && planVisuals !== visualBrief ? fluxClean(planVisuals) : '';
     const fluxPrompt = [
       `${subject}.`,
-      meaning && isEnglishVisualText(meaning) ? `The image illustrates: ${fluxClean(meaning)}.` : '',
-      details ? `${details}.` : '',
+      lookLine ? `${lookLine}.` : '',
       characterContext ? `${fluxClean(characterContext)}.` : '',
       `${fluxClean(style)}.`,
-      'One coherent scene, clear main subject, natural anatomy, expressive body language, recognizable setting.',
+      'A single photograph of one moment in one place, full frame, clear main subject, natural anatomy, expressive body language, recognizable setting.',
       `${aspect} framing with faces and key objects in the upper and middle frame.`,
       'Plain unmarked surfaces, uncluttered background.'
     ].filter(Boolean).join(' ').replace(/\.\s*\./g, '.');
@@ -143,12 +153,14 @@ export function buildSceneImagePrompt({ scene = {}, index = 0, visualPlan = null
     // Channel niche, language and platform are deliberately NOT included here.
     `Create one original ${aspect} image.`,
     `Depict this visual moment: ${visualBrief || planVisuals || 'A clear, expressive story moment with a recognizable subject and setting.'}.`,
+    keyIdea ? `The main idea it must get across: ${keyIdea}.` : '',
     meaning ? `It must clearly illustrate what the narration says: ${meaning}.` : '',
+    lookLine ? `People and setting: ${lookLine}.` : '',
     planVisuals && planVisuals !== visualBrief ? `Visual details: ${planVisuals}.` : '',
     characterContext ? `Character appearance: ${characterContext}.` : '',
     continuity,
     `Visual style: ${style}.`,
-    'Use one coherent scene, a clear main subject, natural anatomy, expressive body language and a recognizable setting. Show the described action rather than a generic portrait.',
+    'Show one moment in one place (no collage, panels or split screen), a clear main subject, natural anatomy, expressive body language and a recognizable setting. Show the described action rather than a generic portrait.',
     'Keep important faces, hands and story objects in the upper and middle portions of the frame.',
     NO_TEXT_RULE,
     'Generate only the image; do not reproduce any instructions or metadata.'

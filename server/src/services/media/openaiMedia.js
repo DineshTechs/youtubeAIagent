@@ -3,7 +3,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import { env } from '../../config/env.js';
-import { getMediaSettings } from '../ai/index.js';
+import { getMediaSettings, mediaOverride, mediaChain } from '../ai/index.js';
+import { aiProgress } from '../ai/aiEvents.js';
+import { getTtsCredentials } from '../ai/ttsKeys.js';
+import { FREE_TTS_PROVIDERS, synthesizeFree } from './freeTts.js';
+import { mcpSynthesize } from './mcpTts.js';
+import { languageCode } from '../uploadSettings.js';
 import { fitPromptToProvider } from '../../utils/imagePrompt.js';
 
 // Use the same deterministic FFmpeg resolution as the video renderer.
@@ -148,9 +153,34 @@ async function cloudflareImage(prompt, outFile) {
   return outFile;
 }
 
+// Images: with no provider given, providers are tried in the Settings priority order
+// and the next one is used when one fails. Returns the file; lastImageProvider() says
+// which provider made it.
+let lastImage = '';
+export const lastImageProvider = () => lastImage;
 export async function generateImage(prompt, outFile, requestedProvider = null, options = {}) {
+  const chain = requestedProvider ? [{ id: requestedProvider, name: requestedProvider }] : await mediaChain('image');
+  if (!chain.length) throw new Error('No image provider is set up. Add one in Settings → Images.');
+  const failures = [];
+  for (let i = 0; i < chain.length; i++) {
+    const { id, name } = chain[i];
+    try {
+      const out = await mediaOverride.run({ ...(mediaOverride.getStore() || {}), imageProvider: id }, () => generateImageWith(prompt, outFile, options));
+      lastImage = id;
+      if (i > 0) aiProgress(`Image made by ${name} (backup provider #${i + 1}).`, { provider: id });
+      return out;
+    } catch (e) {
+      failures.push(`${name}: ${String(e?.message || e).slice(0, 200)}`);
+      if (chain[i + 1]) aiProgress(`Image provider ${name} failed (${String(e?.message || e).replace(/\s+/g, ' ').slice(0, 140)}). Trying ${chain[i + 1].name} next.`, { provider: id, level: 'warning' });
+      else if (chain.length === 1) throw e;
+    }
+  }
+  throw new Error(`All image providers failed — ${failures.join(' | ')}`);
+}
+
+async function generateImageWith(prompt, outFile, options = {}) {
   const settings = await getMediaSettings();
-  const imageProvider = requestedProvider || settings.imageProvider;
+  const imageProvider = settings.imageProvider;
   if (imageProvider === 'mock') {
     const { generateMockImage } = await import('./mockMedia.js');
     return generateMockImage(prompt, outFile);
@@ -169,6 +199,14 @@ export async function generateImage(prompt, outFile, requestedProvider = null, o
 
 // A channel profile may pick its own voice per narration provider (blank = Settings default).
 function profileVoice(profile, provider) { return String(profile?.voices?.[provider] || '').trim(); }
+
+// Which voice generateSpeech will use right now (provider, model, voice), so saved
+// scene narration made with another voice is not mixed into the same video.
+export async function currentSpeechVoice(profile = {}) {
+  const settings = await getMediaSettings();
+  const provider = settings.ttsProvider || '';
+  return { provider, model: settings.ttsModel || '', voice: profileVoice(profile, provider) || settings.ttsVoice || '' };
+}
 
 async function groqSpeechChunk(text, outFile, profile = {}) {
   if (!env.groqKey) throw new Error('GROQ_API_KEY is not configured for TTS.');
@@ -376,5 +414,24 @@ export async function generateSpeech(text, outFile, language = 'English', profil
   }
   if (ttsProvider === 'openai') return generateOpenAISpeech(text, outFile, language, profile);
   if (ttsProvider === 'gemini') return generateGeminiSpeech(text, outFile, language, profile);
+  if (ttsProvider === 'aiawaaz') {
+    const settings = await getMediaSettings();
+    const c = (await getTtsCredentials()).aiawaaz;
+    const audio = await mcpSynthesize({ url: c.url, apiKey: c.key, tool: c.tool, enhance: c.enhance, voice: profileVoice(profile, 'aiawaaz') || settings.ttsVoice || '', language: languageCode(language) || 'hi', text });
+    if (audio.length < 500) throw new Error('AI Awaaz returned too little audio.');
+    await fs.mkdir(path.dirname(outFile), { recursive: true });
+    await fs.writeFile(outFile, audio);
+    return outFile;
+  }
+  if (FREE_TTS_PROVIDERS.includes(ttsProvider)) {
+    const settings = await getMediaSettings();
+    const creds = (await getTtsCredentials())[ttsProvider];
+    const voice = profileVoice(profile, ttsProvider) || settings.ttsVoice;
+    const audio = await synthesizeFree(ttsProvider, { creds, voice, model: settings.ttsModel, text });
+    if (audio.length < 500) throw new Error(`${ttsProvider} TTS returned too little audio.`);
+    await fs.mkdir(path.dirname(outFile), { recursive: true });
+    await fs.writeFile(outFile, audio);
+    return outFile;
+  }
   throw new Error(`Unsupported TTS provider: ${ttsProvider}`);
 }

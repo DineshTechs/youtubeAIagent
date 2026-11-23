@@ -1,18 +1,25 @@
 import { env } from '../../config/env.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import AISettings from '../../models/AISettings.js';
 import { GeminiProvider } from './geminiProvider.js';
 import { OpenAIProvider } from './openaiProvider.js';
 import { MockAIProvider } from './mockProvider.js';
-import { GroqProvider, CerebrasProvider } from './openAICompatibleProvider.js';
+import { GroqProvider, CerebrasProvider, compatibleProvider, listCompatibleModels } from './openAICompatibleProvider.js';
+import { resolvePriority, chainFor, createFallbackProvider } from './textChain.js';
+import { TEXT_CATALOG, COMPATIBLE_PROVIDERS, textCredentialsFrom, textKeyStatus, textConfigured, applyTextKeysToEnv, textKeyUpdate } from './textKeys.js';
+import { ttsCredentialsFrom, ttsKeyStatus } from './ttsKeys.js';
+import { FREE_TTS_DEFAULTS } from '../media/freeTts.js';
 
-export const PROVIDERS = ['gemini', 'groq', 'cerebras', 'openai', 'mock'];
+export const PROVIDERS = ['gemini', 'groq', 'cerebras', ...COMPATIBLE_PROVIDERS, 'openai', 'mock'];
 export const IMAGE_PROVIDERS = ['gemini', 'openai', 'cloudflare', 'pollinations', 'mock'];
-export const TTS_PROVIDERS = ['groq', 'openai', 'gemini', 'mock'];
+export const TTS_PROVIDERS = ['groq', 'openai', 'gemini', 'azure', 'google', 'elevenlabs', 'aiawaaz', 'mock'];
+// Languages each narration provider can speak well (shown in Settings; used for Hindi warnings).
+export const TTS_HINDI = { groq: false, openai: true, gemini: true, azure: true, google: true, elevenlabs: true, aiawaaz: true, mock: false };
 
 function defaults() {
   return {
     text: {
-      models: { gemini: env.geminiTextModel, groq: env.groqTextModel, cerebras: env.cerebrasTextModel, openai: env.textModel },
+      models: { gemini: env.geminiTextModel, groq: env.groqTextModel, cerebras: env.cerebrasTextModel, openai: env.textModel, ...Object.fromEntries(COMPATIBLE_PROVIDERS.map(p => [p, TEXT_CATALOG[p].model])) },
       temperature: 0.7,
       maxOutputTokens: 2600
     },
@@ -22,8 +29,8 @@ function defaults() {
       imageSize: env.geminiImageSize || '1K',
       imageAspectRatio: '9:16',
       imageQuality: 'high',
-      ttsModels: { groq: env.groqTtsModel, openai: env.openaiTtsModel, gemini: env.geminiTtsModel },
-      ttsVoices: { groq: env.groqTtsVoice, openai: env.openaiTtsVoice, gemini: env.geminiTtsVoice },
+      ttsModels: { groq: env.groqTtsModel, openai: env.openaiTtsModel, gemini: env.geminiTtsModel, azure: FREE_TTS_DEFAULTS.azure.model, google: FREE_TTS_DEFAULTS.google.model, elevenlabs: FREE_TTS_DEFAULTS.elevenlabs.model, aiawaaz: 'mcp' },
+      ttsVoices: { groq: env.groqTtsVoice, openai: env.openaiTtsVoice, gemini: env.geminiTtsVoice, azure: FREE_TTS_DEFAULTS.azure.voice, google: FREE_TTS_DEFAULTS.google.voice, elevenlabs: FREE_TTS_DEFAULTS.elevenlabs.voice, aiawaaz: '' },
       generationEnabled: env.mediaGenerationEnabled,
       mockMode: env.mediaMock,
       pollinationsSafe: String(env.pollinationsSafe).toLowerCase() === 'true'
@@ -36,14 +43,47 @@ function defaults() {
 }
 
 export function providerMeta(settings = null) {
-  const models = settings?.text?.models || defaults().text.models;
-  return {
-    gemini: { name: 'Gemini', model: models.gemini, configured: Boolean(env.geminiKey), freeTier: true },
-    groq: { name: 'Groq', model: models.groq, configured: Boolean(env.groqKey), freeTier: true },
-    cerebras: { name: 'Cerebras', model: models.cerebras, configured: Boolean(env.cerebrasKey), freeTier: false },
-    openai: { name: 'OpenAI', model: models.openai, configured: Boolean(env.openaiKey), freeTier: false },
-    mock: { name: 'Mock / Development', model: 'local', configured: true, freeTier: true }
-  };
+  const models = { ...defaults().text.models, ...(settings?.text?.models || {}) };
+  const keys = textKeyStatus(settings);
+  const out = {};
+  for (const id of PROVIDERS.filter(p => p !== 'mock')) out[id] = { ...keys[id], name: TEXT_CATALOG[id].name, model: models[id], configured: keys[id].configured, freeTier: TEXT_CATALOG[id].free };
+  out.mock = { name: 'Mock / Development', model: 'local', configured: true, freeTier: true };
+  return out;
+}
+
+function makeTextProvider(name, settings) {
+  const model = settings.text?.models?.[name] || defaults().text.models[name];
+  if (name === 'gemini') return new GeminiProvider(model, settings.text);
+  if (name === 'groq') return new GroqProvider(model, settings.text);
+  if (name === 'cerebras') return new CerebrasProvider(model, settings.text);
+  if (name === 'openai') return new OpenAIProvider(model, settings.text);
+  if (COMPATIBLE_PROVIDERS.includes(name)) {
+    const cred = textCredentialsFrom(settings)[name];
+    if (!textConfigured(name, cred)) throw new Error(`${TEXT_CATALOG[name].name} has no API key yet. Add it in Settings → AI providers.`);
+    return compatibleProvider({ name: TEXT_CATALOG[name].name, apiKey: cred.key, baseUrl: cred.baseUrl, model, textSettings: settings.text });
+  }
+  if (name === 'mock') return new MockAIProvider();
+  throw new Error(`Unsupported AI provider: ${name}`);
+}
+
+// Saves (or removes) a script provider's key from the dashboard.
+export async function saveTextKey(provider, input = {}) {
+  if (!PROVIDERS.includes(provider) || provider === 'mock') throw Object.assign(new Error(`Unknown script provider: ${provider}`), { status: 400 });
+  const { set, unset } = textKeyUpdate(provider, input);
+  const update = { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) };
+  if (Object.keys(update).length) await AISettings.updateOne({ key: 'global' }, update, { upsert: true });
+  let settings = await getGlobalSettings();
+  // A provider that just got its key joins the end of the priority list.
+  if (!input.clear && Array.isArray(settings.text?.priority) && settings.text.priority.length && !settings.text.priority.includes(provider) && providerMeta(settings)[provider]?.configured) {
+    await AISettings.updateOne({ key: 'global' }, { $push: { 'text.priority': provider } });
+    settings = await getGlobalSettings();
+  }
+  // Removing the key of the provider in use switches back to one that still works.
+  if (input.clear && settings.activeProvider === provider && !providerMeta(settings)[provider].configured) {
+    const fallback = PROVIDERS.find(p => p !== 'mock' && providerMeta(settings)[p].configured) || 'mock';
+    await AISettings.updateOne({ key: 'global' }, { $set: { activeProvider: fallback } });
+  }
+  return getAISettings();
 }
 
 function mediaMeta(settings = null) {
@@ -53,6 +93,7 @@ function mediaMeta(settings = null) {
   const ttsVoices = settings?.media?.ttsVoices || d.media.ttsVoices;
   const imageProvider = settings?.media?.imageProvider || env.imageProvider || 'openai';
   const ttsProvider = settings?.media?.ttsProvider || env.ttsProvider || 'groq';
+  const creds = ttsCredentialsFrom(settings);
   const imageProviders = {
     gemini: { name: 'Gemini Image', model: imageModels.gemini, configured: Boolean(env.geminiKey), freeTier: false },
     openai: { name: 'OpenAI', model: imageModels.openai, configured: Boolean(env.openaiKey), freeTier: false },
@@ -64,6 +105,10 @@ function mediaMeta(settings = null) {
     groq: { name: 'Groq Orpheus', model: ttsModels.groq, voice: ttsVoices.groq, configured: Boolean(env.groqKey), freeTier: true },
     openai: { name: 'OpenAI TTS', model: ttsModels.openai, voice: ttsVoices.openai, configured: Boolean(env.openaiKey), freeTier: false },
     gemini: { name: 'Gemini TTS', model: ttsModels.gemini, voice: ttsVoices.gemini, configured: Boolean(env.geminiKey), freeTier: true },
+    azure: { name: 'Microsoft Azure Speech', model: 'Neural', voice: ttsVoices.azure, configured: Boolean(creds.azure.key && creds.azure.region), freeTier: true, freeNote: '0.5M characters free / month (F0)' },
+    google: { name: 'Google Cloud TTS', model: 'WaveNet / Standard', voice: ttsVoices.google, configured: Boolean(creds.google.key), freeTier: true, freeNote: '4M WaveNet/Standard characters free / month (billing must be enabled)' },
+    elevenlabs: { name: 'ElevenLabs', model: ttsModels.elevenlabs, voice: ttsVoices.elevenlabs, configured: Boolean(creds.elevenlabs.key), freeTier: true, freeNote: 'Free plan: ~10 min / month, non-commercial, attribution required' },
+    aiawaaz: { name: 'AI Awaaz (MCP)', model: creds.aiawaaz.tool || 'auto-detected tool', voice: ttsVoices.aiawaaz || '', configured: Boolean(creds.aiawaaz.key), freeTier: false, freeNote: 'Indian-language voices via MCP; usage depends on your AI Awaaz plan' },
     mock: { name: 'Mock / Development', model: 'local', voice: 'local', configured: true, freeTier: true }
   };
   return {
@@ -76,6 +121,8 @@ function mediaMeta(settings = null) {
     ttsVoice: ttsProviders[ttsProvider]?.voice || 'local',
     ttsConfigured: Boolean(ttsProviders[ttsProvider]?.configured),
     ttsProviders,
+    ttsHindi: TTS_HINDI,
+    ttsKeys: ttsKeyStatus(settings),
     imageSize: settings?.media?.imageSize || d.media.imageSize,
     imageAspectRatio: settings?.media?.imageAspectRatio || d.media.imageAspectRatio,
     imageQuality: settings?.media?.imageQuality || d.media.imageQuality,
@@ -101,6 +148,7 @@ async function getGlobalSettings() {
     if (!settings.text?.models?.groq) { patch['text.models.groq'] = d.text.models.groq; changed = true; }
     if (!settings.text?.models?.cerebras) { patch['text.models.cerebras'] = d.text.models.cerebras; changed = true; }
     if (!settings.text?.models?.openai) { patch['text.models.openai'] = d.text.models.openai; changed = true; }
+    for (const p of COMPATIBLE_PROVIDERS) if (!settings.text?.models?.[p]) { patch[`text.models.${p}`] = d.text.models[p]; changed = true; }
     for (const [k,v] of Object.entries(d.media.imageModels)) if (!settings.media?.imageModels?.[k]) { patch[`media.imageModels.${k}`]=v; changed=true; }
     for (const [k,v] of Object.entries(d.media.ttsModels)) if (!settings.media?.ttsModels?.[k]) { patch[`media.ttsModels.${k}`]=v; changed=true; }
     for (const [k,v] of Object.entries(d.media.ttsVoices)) if (!settings.media?.ttsVoices?.[k]) { patch[`media.ttsVoices.${k}`]=v; changed=true; }
@@ -116,25 +164,46 @@ async function getGlobalSettings() {
     if (!settings.retention?.days) { patch['retention.days']=30; changed=true; }
     if (changed) settings = await AISettings.findOneAndUpdate({key:'global'},{$set:patch},{new:true});
   }
+  applyTextKeysToEnv(settings);
   return settings;
 }
 
+function priorityOf(settings) {
+  const meta = providerMeta(settings);
+  const order = resolvePriority({ priority: settings.text?.priority, activeProvider: settings.activeProvider, ids: PROVIDERS, configured: p => meta[p]?.configured, autoInclude: p => meta[p]?.freeTier });
+  return { order, fallbackEnabled: settings.text?.fallbackEnabled !== false, meta };
+}
+// The script AI: providers in the user's priority order, each tried when the one
+// before it fails.
 export async function getActiveProvider() {
   const settings = await getGlobalSettings();
-  const model = settings.text?.models?.[settings.activeProvider];
-  switch (settings.activeProvider) {
-    case 'gemini': return new GeminiProvider(model, settings.text);
-    case 'groq': return new GroqProvider(model, settings.text);
-    case 'cerebras': return new CerebrasProvider(model, settings.text);
-    case 'openai': return new OpenAIProvider(model, settings.text);
-    case 'mock': return new MockAIProvider();
-    default: throw new Error(`Unsupported AI provider: ${settings.activeProvider}`);
-  }
+  const { order, fallbackEnabled, meta } = priorityOf(settings);
+  const chain = chainFor({ order, fallbackEnabled, configured: p => meta[p]?.configured });
+  if (!chain.length) return makeTextProvider(settings.activeProvider, settings);   // gives the "add a key" error
+  return createFallbackProvider(chain.map(id => ({ id, name: meta[id].name, make: () => makeTextProvider(id, settings) })));
 }
 
+// Saves the priority order (enabled providers, first = main) and whether to fall back.
+export async function setTextPriority({ order, fallbackEnabled } = {}) {
+  const set = {};
+  if (Array.isArray(order)) {
+    const clean = order.map(String).filter((p, i, a) => PROVIDERS.includes(p) && a.indexOf(p) === i);
+    if (!clean.length) throw Object.assign(new Error('Keep at least one script provider switched on.'), { status: 400 });
+    set['text.priority'] = clean;
+    const meta = providerMeta(await getGlobalSettings());
+    set.activeProvider = clean.find(p => meta[p]?.configured) || clean[0];
+  }
+  if (typeof fallbackEnabled === 'boolean') set['text.fallbackEnabled'] = fallbackEnabled;
+  if (Object.keys(set).length) await AISettings.updateOne({ key: 'global' }, { $set: set }, { upsert: true });
+  return getAISettings();
+}
+
+// Lets one call use a backup image / narration provider: getMediaSettings() inside
+// mediaOverride.run({imageProvider:'pollinations'}, fn) answers for that provider.
+export const mediaOverride = new AsyncLocalStorage();
 export async function getMediaSettings() {
   const settings = await getGlobalSettings();
-  const media = settings.media || {};
+  const media = { ...((typeof settings.toObject === 'function' ? settings.toObject().media : settings.media) || {}), ...(mediaOverride.getStore() || {}) };
   return {
     imageProvider: media.imageProvider || env.imageProvider || 'openai',
     imageModel: media.imageModels?.[media.imageProvider] || defaults().media.imageModels.openai,
@@ -158,8 +227,11 @@ export async function getAISettings() {
   const settings = await getGlobalSettings();
   const media = mediaMeta(settings);
   return {
-    activeProvider: settings.activeProvider,
+    activeProvider: (({ order, fallbackEnabled, meta }) => chainFor({ order, fallbackEnabled, configured: p => meta[p]?.configured })[0])(priorityOf(settings)) || settings.activeProvider,
     providers: providerMeta(settings),
+    textPriority: (({ order, fallbackEnabled }) => ({ order, fallbackEnabled }))(priorityOf(settings)),
+    imagePriority: (({ order, fallbackEnabled }) => ({ order, fallbackEnabled }))(mediaPriorityOf(settings, 'image')),
+    ttsPriority: (({ order, fallbackEnabled }) => ({ order, fallbackEnabled }))(mediaPriorityOf(settings, 'tts')),
     media,
     text: settings.text,
     video: settings.video,
@@ -173,8 +245,9 @@ export async function setActiveProvider(name) {
   if (!PROVIDERS.includes(name)) throw new Error(`Unsupported AI provider: ${name}`);
   const settings = await getGlobalSettings();
   const meta = providerMeta(settings)[name];
-  if (!meta?.configured) throw new Error(`${meta?.name || name} is not configured. Add its API key on the server first.`);
-  await AISettings.updateOne({key:'global'},{$set:{activeProvider:name}},{upsert:true});
+  if (!meta?.configured) throw new Error(`${meta?.name || name} has no API key yet. Add it in Settings → AI providers.`);
+  const { order } = priorityOf(settings);
+  await AISettings.updateOne({key:'global'},{$set:{activeProvider:name,'text.priority':[name,...order.filter(p=>p!==name)]}},{upsert:true});
   return getAISettings();
 }
 
@@ -189,8 +262,8 @@ export async function updateAIConfig(patch = {}) {
   if (patch.media?.imageSizes) for (const p of IMAGE_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.imageSizes[p] === 'string' && patch.media.imageSizes[p].trim()) allowed[`media.imageSizes.${p}`]=patch.media.imageSizes[p].trim();
   if (patch.media?.imageAspectRatio) allowed['media.imageAspectRatio']=String(patch.media.imageAspectRatio);
   if (patch.media?.imageQuality) allowed['media.imageQuality']=patch.media.imageQuality;
-  if (patch.media?.ttsModels) for (const p of ['groq','openai','gemini']) if (typeof patch.media.ttsModels[p]==='string' && patch.media.ttsModels[p].trim()) allowed[`media.ttsModels.${p}`]=patch.media.ttsModels[p].trim();
-  if (patch.media?.ttsVoices) for (const p of ['groq','openai','gemini']) if (typeof patch.media.ttsVoices[p]==='string' && patch.media.ttsVoices[p].trim()) allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim();
+  if (patch.media?.ttsModels) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsModels[p]==='string' && patch.media.ttsModels[p].trim()) allowed[`media.ttsModels.${p}`]=patch.media.ttsModels[p].trim();
+  if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string' && patch.media.ttsVoices[p].trim()) allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim();
   for (const k of ['generationEnabled','mockMode','pollinationsSafe']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
   if (patch.video) {
     for (const k of ['width','height','fps','imageFit']) if (patch.video[k] != null) allowed[`video.${k}`]=patch.video[k];
@@ -217,10 +290,11 @@ export async function setMediaProvider(type, provider) {
   if (!allowed.includes(provider)) throw new Error(`Unsupported ${type} provider: ${provider}`);
   const configured = type === 'image'
     ? provider === 'mock' || (provider === 'gemini' && Boolean(env.geminiKey)) || (provider === 'openai' && Boolean(env.openaiKey)) || (provider === 'cloudflare' && Boolean(env.cloudflareAccountId && env.cloudflareApiToken)) || provider === 'pollinations'
-    : provider === 'mock' || (provider === 'groq' && Boolean(env.groqKey)) || (provider === 'openai' && Boolean(env.openaiKey)) || (provider === 'gemini' && Boolean(env.geminiKey));
-  if (!configured) throw new Error(`${provider} is not configured. Add its API key in the server environment first.`);
+    : provider === 'mock' || (provider === 'groq' && Boolean(env.groqKey)) || (provider === 'openai' && Boolean(env.openaiKey)) || (provider === 'gemini' && Boolean(env.geminiKey)) || (['azure','google','elevenlabs','aiawaaz'].includes(provider) && mediaMeta(await getGlobalSettings()).ttsProviders[provider].configured);
+  if (!configured) throw new Error(`${provider} is not configured. Add its API key ${['azure','google','elevenlabs','aiawaaz'].includes(provider)?'in Settings → Narration':'in the server environment'} first.`);
   const field = type === 'image' ? 'media.imageProvider' : 'media.ttsProvider';
-  await AISettings.updateOne({key:'global'},{$set:{[field]:provider}},{upsert:true});
+  const { order } = mediaPriorityOf(await getGlobalSettings(), type);
+  await AISettings.updateOne({key:'global'},{$set:{[field]:provider,[type === 'image' ? 'media.imagePriority' : 'media.ttsPriority']:[provider,...order.filter(p=>p!==provider)]}},{upsert:true});
   return getAISettings();
 }
 
@@ -239,12 +313,83 @@ export async function testMediaProvider(type, provider) {
   if (provider==='groq'&&!env.groqKey) throw new Error('GROQ_API_KEY is not configured.');
   if (provider==='openai'&&!env.openaiKey) throw new Error('OPENAI_API_KEY is not configured.');
   if (provider==='gemini'&&!env.geminiKey) throw new Error('GEMINI_API_KEY is not configured for Gemini TTS.');
+  if (provider === 'aiawaaz') {
+    const { mcpSynthesize } = await import('../media/mcpTts.js');
+    const settings = await getGlobalSettings();
+    const c = ttsCredentialsFrom(settings).aiawaaz;
+    const audio = await mcpSynthesize({ url: c.url, apiKey: c.key, tool: c.tool, enhance: c.enhance, voice: settings.media?.ttsVoices?.aiawaaz || '', language: 'hi', text: 'नमस्ते, यह एक परीक्षण है।' });
+    if (audio.length < 1000) throw new Error('AI Awaaz returned too little audio.');
+    return {ok:true,message:`AI Awaaz works: ${Math.round(audio.length/1024)} KB of Hindi audio.`};
+  }
+  if (['azure','google','elevenlabs'].includes(provider)) {
+    // Real test: synthesize a short Hindi sentence with the configured voice.
+    const { synthesizeFree } = await import('../media/freeTts.js');
+    const settings = await getGlobalSettings();
+    const creds = ttsCredentialsFrom(settings)[provider];
+    const voice = settings.media?.ttsVoices?.[provider] || FREE_TTS_DEFAULTS[provider].voice;
+    const audio = await synthesizeFree(provider, { creds, voice, model: settings.media?.ttsModels?.[provider], text: 'नमस्ते, यह एक परीक्षण है।' });
+    if (audio.length < 1000) throw new Error(`${provider} returned too little audio.`);
+    return {ok:true,message:`${provider} works: ${Math.round(audio.length/1024)} KB of Hindi audio with voice ${voice}.`};
+  }
   return {ok:true,message:`${provider} narration credentials are configured.`};
 }
 
 export async function testProvider(name) {
   if (!PROVIDERS.includes(name)) throw new Error(`Unsupported AI provider: ${name}`);
-  const provider = await (async()=>{const settings=await getGlobalSettings(); const model=settings.text?.models?.[name]; if(name==='gemini')return new GeminiProvider(model, settings.text); if(name==='groq')return new GroqProvider(model, settings.text); if(name==='cerebras')return new CerebrasProvider(model, settings.text); if(name==='openai')return new OpenAIProvider(model, settings.text); return new MockAIProvider();})();
+  const provider = makeTextProvider(name, await getGlobalSettings());
   if (typeof provider.testConnection==='function') return provider.testConnection();
   return {ok:true,message:'Mock provider is ready.'};
+}
+
+// Models a script provider offers to the saved key (Settings → "Load models").
+const LIST_URLS = { gemini: 'https://generativelanguage.googleapis.com/v1beta/openai', groq: 'https://api.groq.com/openai/v1', cerebras: 'https://api.cerebras.ai/v1', openai: 'https://api.openai.com/v1' };
+export async function listTextModels(name) {
+  if (!PROVIDERS.includes(name) || name === 'mock') throw Object.assign(new Error(`Unknown script provider: ${name}`), { status: 400 });
+  const settings = await getGlobalSettings();
+  const cred = textCredentialsFrom(settings)[name];
+  if (!textConfigured(name, cred) && !LIST_URLS[name]) throw Object.assign(new Error(`Save the ${TEXT_CATALOG[name].name} key first.`), { status: 400 });
+  if (!cred.key && !TEXT_CATALOG[name].keyOptional) throw Object.assign(new Error(`Save the ${TEXT_CATALOG[name].name} key first.`), { status: 400 });
+  if (name === 'cloudflare') {
+    // Cloudflare lists its text models through its own search API.
+    const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cred.accountId)}/ai/models/search?task=Text%20Generation&per_page=100`, { headers: { Authorization: `Bearer ${cred.key}` }, signal: AbortSignal.timeout(20000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(`Could not load Cloudflare models (${r.status}): ${JSON.stringify(j.errors || j).slice(0, 300)}`);
+    return { models: (j.result || []).map(m => m.name).filter(Boolean).sort(), current: settings.text?.models?.[name] || defaults().text.models[name] };
+  }
+  const models = await listCompatibleModels({ baseUrl: LIST_URLS[name] || cred.baseUrl, apiKey: cred.key });
+  return { models: name === 'gemini' ? models.map(m => m.replace(/^models\//, '')) : models, current: settings.text?.models?.[name] || defaults().text.models[name] };
+}
+
+// ---- Image / narration priority (Settings → Images / Narration) ----
+function mediaPriorityOf(settings, type) {
+  const meta = mediaMeta(settings);
+  const providers = type === 'image' ? meta.imageProviders : meta.ttsProviders;
+  const ids = type === 'image' ? IMAGE_PROVIDERS : TTS_PROVIDERS;
+  const media = settings.media || {};
+  // Automatic backups: free providers only, and for narration only voices that speak Hindi.
+  const order = resolvePriority({ priority: type === 'image' ? media.imagePriority : media.ttsPriority, activeProvider: type === 'image' ? meta.imageProvider : meta.ttsProvider, ids, configured: p => providers[p]?.configured, autoInclude: p => providers[p]?.freeTier && (type === 'image' || TTS_HINDI[p]) });
+  const fallbackEnabled = (type === 'image' ? media.imageFallbackEnabled : media.ttsFallbackEnabled) !== false;
+  return { order, fallbackEnabled, chain: chainFor({ order, fallbackEnabled, configured: p => providers[p]?.configured }), providers };
+}
+// Providers a job tries, in order (first = main).
+export async function mediaChain(type) {
+  const p = mediaPriorityOf(await getGlobalSettings(), type);
+  return p.chain.map(id => ({ id, name: p.providers[id].name }));
+}
+export async function setMediaPriority(type, { order, fallbackEnabled } = {}) {
+  if (!['image', 'tts'].includes(type)) throw Object.assign(new Error('type must be image or tts'), { status: 400 });
+  const ids = type === 'image' ? IMAGE_PROVIDERS : TTS_PROVIDERS;
+  const key = type === 'image' ? 'image' : 'tts';
+  const set = {};
+  if (Array.isArray(order)) {
+    const clean = order.map(String).filter((p, i, a) => ids.includes(p) && a.indexOf(p) === i);
+    if (!clean.length) throw Object.assign(new Error('Keep at least one provider switched on.'), { status: 400 });
+    set[`media.${key}Priority`] = clean;
+    const meta = mediaMeta(await getGlobalSettings());
+    const providers = type === 'image' ? meta.imageProviders : meta.ttsProviders;
+    set[`media.${key}Provider`] = clean.find(p => providers[p]?.configured) || clean[0];
+  }
+  if (typeof fallbackEnabled === 'boolean') set[`media.${key}FallbackEnabled`] = fallbackEnabled;
+  if (Object.keys(set).length) await AISettings.updateOne({ key: 'global' }, { $set: set }, { upsert: true });
+  return getAISettings();
 }
