@@ -142,7 +142,7 @@ export function buildTtsArgs(tool,{text,voice,language,speed}){
   return args;
 }
 // Extracts audio from a tools/call result: inline audio, an embedded resource, base64 in JSON, or a download URL.
-export async function audioFromResult(result,fetchImpl=fetch){
+export async function audioFromResult(result,fetchImpl=fetch,{mcpUrl}={}){
   const content=result?.content||[];
   for(const c of content){
     if(c.type==='audio'&&c.data)return Buffer.from(c.data,'base64');
@@ -155,18 +155,31 @@ export async function audioFromResult(result,fetchImpl=fetch){
       const b64=c.audio||c.audio_base64||c.audioContent||c.data;
       if(typeof b64==='string'&&b64.length>200&&/^[A-Za-z0-9+/=\s]+$/.test(b64.slice(0,200)))return Buffer.from(b64.replace(/^data:audio\/[a-z0-9.+-]+;base64,/i,''),'base64');
       const url=c.url||c.audio_url||c.audioUrl||c.download_url||c.downloadUrl||c.file_url||c.link;
-      if(typeof url==='string'&&/^https?:\/\//.test(url))return download(url,fetchImpl);
+      if(typeof url==='string'&&/^https?:\/\//.test(url))return download(url,fetchImpl,mcpUrl);
     }
     if(typeof c==='string'){
       const data=/data:audio\/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=]+)/i.exec(c);if(data)return Buffer.from(data[1],'base64');
       const url=/(https?:\/\/[^\s"'<>)]+\.(?:mp3|wav|m4a|ogg|aac)(?:\?[^\s"'<>)]*)?)/i.exec(c)||/(https?:\/\/[^\s"'<>)]+)/.exec(c);
-      if(url)return download(url[1],fetchImpl);
+      if(url)return download(url[1],fetchImpl,mcpUrl);
     }
   }
   throw new McpError(`the speech tool returned no audio (${textOf(result).slice(0,200)||'empty result'}).`);
 }
-async function download(url,fetchImpl){
-  const r=await fetchImpl(url);if(!r.ok)throw new McpError(`could not download the audio (HTTP ${r.status}).`);
+// When the MCP URL is a relay (e.g. a Cloudflare Worker, for servers that cannot
+// reach app.aiawaaz.io directly), AI Awaaz audio links go through the same relay:
+//   https://relay/<secret>/api/mcp  +  https://app.aiawaaz.io/x.mp3  →  https://relay/<secret>/_host/app.aiawaaz.io/x.mp3
+export function viaRelay(link,mcpUrl){
+  try{
+    const m=new URL(mcpUrl),u=new URL(link);
+    if(/(^|\.)aiawaaz\.io$/i.test(m.hostname)||!/(^|\.)aiawaaz\.io$/i.test(u.hostname))return link;
+    const base=`${m.origin}${m.pathname.replace(/\/api\/mcp\/?$/i,'').replace(/\/+$/,'')}`;
+    return `${base}/_host/${u.host}${u.pathname}${u.search}`;
+  }catch{return link;}
+}
+async function download(url,fetchImpl,mcpUrl){
+  const target=mcpUrl?viaRelay(url,mcpUrl):url;
+  let r;try{r=await fetchImpl(target);}catch(e){throw new McpError(`could not download the audio: ${describeNetworkError(e,target)}`);}
+  if(!r.ok)throw new McpError(`could not download the audio (HTTP ${r.status}).`);
   return Buffer.from(await r.arrayBuffer());
 }
 
@@ -189,7 +202,7 @@ export async function mcpSynthesize({url,apiKey,tool:preferredTool,voice,languag
     const parts=[];
     for(const piece of splitByChars(text)){
       const spoken=enhancer?await enhanceText(client,enhancer,piece):piece;
-      parts.push(await audioFromResult(await client.callTool(tool.name,buildTtsArgs(tool,{text:spoken,voice,language})),fetchImpl));
+      parts.push(await audioFromResult(await client.callTool(tool.name,buildTtsArgs(tool,{text:spoken,voice,language})),fetchImpl,{mcpUrl:url}));
     }
     if(!parts.length)throw new McpError('nothing to speak.');
     return Buffer.concat(parts);

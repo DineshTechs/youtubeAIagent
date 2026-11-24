@@ -1,0 +1,41 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {viaRelay, audioFromResult} from '../src/services/media/mcpTts.js';
+import worker from '../deploy/aiawaaz-relay-worker.js';
+
+const RELAY = 'https://relay.example.workers.dev/s3cr3t/api/mcp';
+
+test('AI Awaaz audio links go through the relay when one is set', () => {
+  assert.equal(viaRelay('https://app.aiawaaz.io/files/a.mp3?t=1', RELAY), 'https://relay.example.workers.dev/s3cr3t/_host/app.aiawaaz.io/files/a.mp3?t=1');
+  assert.equal(viaRelay('https://cdn.aiawaaz.io/x.mp3', RELAY), 'https://relay.example.workers.dev/s3cr3t/_host/cdn.aiawaaz.io/x.mp3');
+  assert.equal(viaRelay('https://app.aiawaaz.io/a.mp3', 'https://app.aiawaaz.io/api/mcp'), 'https://app.aiawaaz.io/a.mp3'); // no relay
+  assert.equal(viaRelay('https://storage.example.com/a.mp3', RELAY), 'https://storage.example.com/a.mp3');                 // other hosts direct
+});
+
+test('downloads use the relay address', async () => {
+  let asked;
+  const audio = Buffer.alloc(3000, 1);
+  const out = await audioFromResult({content: [{type: 'text', text: 'Download: https://app.aiawaaz.io/out/a.mp3'}]}, async u => { asked = u; return new Response(audio); }, {mcpUrl: RELAY});
+  assert.equal(asked, 'https://relay.example.workers.dev/s3cr3t/_host/app.aiawaaz.io/out/a.mp3');
+  assert.equal(out.length, 3000);
+});
+
+test('the relay Worker forwards only with the secret and only to aiawaaz.io', async () => {
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { seen.push({url, auth: init.headers.get('authorization'), sid: init.headers.get('mcp-session-id')}); return new Response('{"ok":1}', {status: 200, headers: {'content-type': 'application/json', 'mcp-session-id': 'abc'}}); };
+  try {
+    const env = {RELAY_SECRET: 's3cr3t'};
+    const post = (path, headers = {}) => worker.fetch(new Request(`https://relay.example.workers.dev${path}`, {method: 'POST', headers: {authorization: 'Bearer k', ...headers}, body: '{}'}), env);
+    assert.equal((await post('/wrong/api/mcp')).status, 404);
+    assert.equal((await post('/s3cr3t/_host/evil.com/x')).status, 403);
+    const r = await post('/s3cr3t/api/mcp', {'mcp-session-id': 'abc'});
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('mcp-session-id'), 'abc');
+    assert.deepEqual(seen[0], {url: 'https://app.aiawaaz.io/api/mcp', auth: 'Bearer k', sid: 'abc'});
+    assert.equal((await worker.fetch(new Request('https://relay.example.workers.dev/s3cr3t/_host/cdn.aiawaaz.io/a.mp3'), env)).status, 200);
+    assert.equal(seen[1].url, 'https://cdn.aiawaaz.io/a.mp3');
+    assert.equal((await post('/s3cr3t/api/mcp', {}).catch(() => null)) !== null, true);
+    assert.equal((await worker.fetch(new Request('https://r/x/api/mcp'), {})).status, 404); // no secret configured → closed
+  } finally { globalThis.fetch = realFetch; }
+});
