@@ -13,6 +13,25 @@ function hookMatchesLanguage(hook, language) {
   return true;
 }
 
+// The spoken hook must be whole sentences. It used to be cut at 240 characters,
+// which could stop the opening line mid-word. Now labels/quotes are removed and a
+// long hook keeps only the complete sentences that fit (never half a sentence).
+export const HOOK_MAX_CHARS = 280;
+export function cleanHook(value, max = HOOK_MAX_CHARS) {
+  let h = String(value || '').replace(/\s+/g, ' ').trim()
+    .replace(/^(?:\*\*)?(?:hook|opening hook|option)\s*(?:#?\d+)?\s*(?:\([^)]{0,40}\))?\s*[:\-–—]\s*/i, '')
+    .replace(/^["“”'‘’]+|["“”'‘’]+$/g, '').replace(/\*\*/g, '').trim();
+  if (h.length <= max) return h;
+  const sentences = h.match(/[^.!?।]+[.!?।]+["”’']?|[^.!?।]+$/gu) || [h];
+  let out = '';
+  for (const s of sentences.map(x => x.trim())) {
+    if (!out) { out = s; continue; }           // always keep the whole first sentence
+    if ((out + ' ' + s).length > max) break;
+    out += ' ' + s;
+  }
+  return out;
+}
+
 export const OPENING_VISUAL_CUE = 'Opening shot: make the first frame immediately striking and curiosity-provoking, showing the first scene\'s narrated action clearly.';
 
 /**
@@ -24,7 +43,8 @@ export function applyOpeningHook(story, language = 'English') {
     return { applied: false, reason: 'No story scenes are available.' };
   }
 
-  const hook = String(story.hook || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  const hook = cleanHook(story.hook);
+  if (hook && hook !== String(story.hook || '').trim()) story.hook = hook;
   if (!hook) return { applied: false, reason: 'Story hook is empty.' };
   if (!hookMatchesLanguage(hook, language)) {
     return { applied: false, reason: `Hook language does not match ${language}.` };

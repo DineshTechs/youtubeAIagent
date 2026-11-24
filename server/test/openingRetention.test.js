@@ -76,3 +76,19 @@ test('opening visual cue is added once and never contains Hindi hook text',()=>{
   assert.equal(story.scenes[0].visualPrompt.match(/Opening shot:/g).length,1);
   assert.match(story.scenes[0].narration,/क्या आप तैयार हैं\?/);
 });
+
+import {cleanHook} from '../src/utils/openingRetention.js';
+test('a long opening hook is never cut mid-sentence', () => {
+  const long = 'क्या आप जानते हैं कि हर दिन की सिर्फ पाँच मिनट की एक छोटी सी आदत आपकी पूरी ज़िंदगी को धीरे-धीरे लेकिन हमेशा के लिए बदल सकती है, और ज़्यादातर लोग इसे कभी समझ ही नहीं पाते? आज मैं आपको वही आदत बताऊँगा। ' + 'यह आदत बहुत आसान है और इसे कोई भी शुरू कर सकता है, चाहे उम्र कुछ भी हो, काम कुछ भी हो, या दिन कितना भी व्यस्त क्यों न हो।';
+  assert.ok(long.length > 280);
+  const h = cleanHook(long);
+  assert.match(h, /[?।]$/u);                       // ends on a full sentence
+  assert.ok(long.startsWith(h));
+  const story = {hook: long, scenes: [{sceneNumber: 1, narration: 'पहला दृश्य।'}]};
+  applyOpeningHook(story, 'Hindi');
+  assert.match(story.scenes[0].narration, /बताऊँगा। पहला दृश्य।$/u);
+});
+test('labels and quotes around a hook are removed', () => {
+  assert.equal(cleanHook('Hook 2 (Curiosity): "What if one habit changed everything?"'), 'What if one habit changed everything?');
+  assert.equal(cleanHook('**Opening hook:** Stop scrolling.'), 'Stop scrolling.');
+});
