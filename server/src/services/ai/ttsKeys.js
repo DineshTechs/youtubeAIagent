@@ -30,7 +30,7 @@ export async function getTtsCredentials(){return ttsCredentialsFrom(await AISett
 // Blank values keep what is saved; clear:true removes a key.
 export async function saveTtsKeys(input={}){
   const set={},unset={};
-  const put=(field,value,clear)=>{if(clear)unset[`secrets.${field}`]=1;else if(typeof value==='string'&&value.trim())set[`secrets.${field}`]=encryptSecret(value.trim().slice(0,500));};
+  const put=(field,value,clear)=>{const v=typeof value==='string'?value.trim().replace(/^["'`]+|["'`]+$/g,'').trim():'';if(clear)unset[`secrets.${field}`]=1;else if(v)set[`secrets.${field}`]=encryptSecret(v.slice(0,500));};
   put('azureSpeechKey',input.azure?.key,input.azure?.clear);
   if(typeof input.azure?.region==='string'){const r=input.azure.region.trim().toLowerCase();if(r&&!/^[a-z0-9]{3,40}$/.test(r))throw Object.assign(new Error('Azure region looks wrong (e.g. centralindia, eastus).'),{status:400});set['secrets.azureSpeechRegion']=r;}
   put('googleTtsKey',input.google?.key,input.google?.clear);

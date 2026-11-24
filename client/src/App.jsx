@@ -88,6 +88,50 @@ function LiveActivity({job}){
 }
 // A provider priority list (script / images / narration): numbered rows, ↑ ↓ to
 // reorder, ✕ to remove, test results shown right under the row that was tested.
+// Settings → AI providers → API keys: every key in one place; replace, test or remove any of them.
+function ApiKeysPanel({apiJson,json,busy,results,onTest,onSaved}){
+  const [list,setList]=useState(null);const [err,setErr]=useState('');const [edit,setEdit]=useState(null);const [form,setForm]=useState({});const [saving,setSaving]=useState(false);const [msg,setMsg]=useState({});
+  async function load(){try{const j=await apiJson('/ai/keys');setList(j.keys||[]);setErr('');}catch(e){setErr(/404|Cannot GET/i.test(e.message)?'The backend is running the previous version — restart it to see this page.':e.message);}}
+  useEffect(()=>{load();},[]);
+  function open(k){setEdit(k.id);setForm(Object.fromEntries(k.fields.map(f=>[f.name,f.secret?'':(f.value||'')])));setMsg(m=>({...m,[k.id]:''}));}
+  async function save(k,clear=false){
+    if(clear&&!window.confirm(`Remove the ${k.name} key saved in the dashboard?${k.source==='dashboard'?' If the server .env has one, that will be used again.':''}`))return;
+    setSaving(true);
+    try{const body=clear?{clear:true}:Object.fromEntries(k.fields.filter(f=>!f.secret||String(form[f.name]||'').trim()).map(f=>[f.name,String(form[f.name]??'')]));
+      if(!clear&&!Object.keys(body).length)throw new Error('Nothing to save: paste a new key first.');
+      const j=await apiJson(`/ai/keys/${k.id}`,json('PUT',body),0);setList(j.keys||[]);if(j.settings)onSaved(j.settings);setEdit(null);
+      setMsg(m=>({...m,[k.id]:clear?'Removed.':'Saved. Use the Test button to check it.'}));}
+    catch(e){setMsg(m=>({...m,[k.id]:`Not saved: ${e.message}`}));}finally{setSaving(false);}
+  }
+  const tests=k=>[k.usedFor.includes('Scripts')&&['text',k.id,'Test script'],k.usedFor.includes('Images')&&['image',k.id,'Test images'],k.usedFor.includes('Narration')&&['tts',k.id,'Test voice']].filter(Boolean);
+  const label={dashboard:'Saved in dashboard',server:'From server .env',none:'Not set'};
+  if(err)return <div className="banner error inline">{err} <button className="ghost" onClick={load}>Retry</button></div>;
+  if(!list)return <p className="muted">Loading keys…</p>;
+  return <div className="keyList">{list.map(k=><div key={k.id} className={`keyRow ${edit===k.id?'editing':''}`}>
+    <div className="keyHead">
+      <div className="keyName"><b>{k.name}</b><span className="keyUses">{k.usedFor.map(u=><span key={u} className="chip">{u}</span>)}</span></div>
+      <div className="keyState"><span className={`keySource ${k.unreadable?'bad':k.source}`}>{k.unreadable?'Saved, but can’t be read here':label[k.source]}{k.hint&&<code>{k.hint}</code>}</span>
+        {k.fields.filter(f=>!f.secret&&f.value).map(f=><small key={f.name} className="muted">{f.label}: {f.value.length>24?`${f.value.slice(0,8)}…${f.value.slice(-4)}`:f.value}{f.fromEnv?' (.env)':''}</small>)}</div>
+      <div className="row wrap keyActions">
+        <button className={k.hasKey||k.configured?'ghost':''} disabled={saving} onClick={()=>edit===k.id?setEdit(null):open(k)}>{edit===k.id?'Cancel':k.hasKey||k.fields.some(f=>!f.secret&&f.value)?'Edit / replace':k.fields.some(f=>f.secret)?'Add key':'Set address'}</button>
+        {tests(k).map(([type,id,t])=><button key={type} className="ghost" disabled={busy||!(k.configured||k.keyOptional)} onClick={()=>onTest(type,id)}>{t}</button>)}
+        {k.source==='dashboard'&&<button className="ghost danger" disabled={saving} onClick={()=>save(k,true)}>Remove</button>}
+      </div>
+    </div>
+    {k.unreadable&&<p className="muted small">This key was saved with a different APP_SECRET_KEY (for example on your PC), so this server can’t decrypt it. Paste it again here.</p>}
+    {k.unreadableOverridden&&<p className="muted small">A dashboard key saved elsewhere can’t be read here, so the server .env key is used. Paste the key again to replace it.</p>}
+    {edit===k.id&&<div className="keyForm">
+      {k.note&&<p className="muted small">{k.note}</p>}
+      <div className="formGrid">{k.fields.map(f=><Field key={f.name} label={f.label} hint={f.secret?(k.hasKey?`Current: ${k.hint||'set'} (${label[k.source].toLowerCase()}). Leave blank to keep it.`:'Stored encrypted; never shown again.'):f.fromEnv?'Currently from server .env; saving here overrides it.':''}>
+        <input type={f.secret?'password':'text'} autoComplete={f.secret?'new-password':'off'} value={form[f.name]||''} placeholder={f.secret?(k.hasKey?'Paste the new key':'Paste key'):(f.placeholder||'')} onChange={e=>setForm(x=>({...x,[f.name]:e.target.value}))}/></Field>)}</div>
+      <div className="row wrap"><button disabled={saving} onClick={()=>save(k)}>{saving?'Saving…':'Save'}</button>{k.keyUrl&&<a className="small" href={k.keyUrl} target="_blank" rel="noreferrer">Get a key ↗</a>}</div>
+      {k.source==='server'&&<p className="muted small">Saving here replaces the .env value for this app without editing the server file. Remove it later to go back to the .env value.</p>}
+    </div>}
+    {msg[k.id]&&<div className={`prioResult ${/^Not saved/.test(msg[k.id])?'bad':'ok'}`}>{msg[k.id]}</div>}
+    {tests(k).map(([type,id])=>(r=>r&&<div key={type} className={`prioResult ${r.pending?'pending':r.ok?'ok':'bad'}`}>{r.pending?<><span className="spinner" aria-hidden="true"/>Testing…</>:<>{r.ok?'✓':'✕'} {r.message}<em> · {new Date(r.at).toLocaleTimeString()}</em></>}</div>)(results[`${type}:${id}`]))}
+  </div>)}</div>;
+}
+
 function PriorityList({kind,items,order,fallbackEnabled,busy,results,onSave,onTest,onEdit,editLabel,describe,fallbackText}){
   const usable=order.filter(id=>items[id]?.configured);
   const others=Object.keys(items).filter(id=>!order.includes(id));
@@ -948,7 +992,7 @@ function App(){
       {aiMsg&&<div className="banner info">{aiMsg}{aiSavedAt&&<small className="muted"> · {aiSavedAt.toLocaleTimeString()}</small>}</div>}
       {!ai&&(aiError?<div className="banner error"><span>Couldn't load settings: {aiError}. Retrying automatically…</span><button className="ghost" onClick={loadAI}>Retry now</button></div>:<p className="muted">Loading settings…</p>)}
       {ai&&settingsTab==='providers'&&<>
-        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
+        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
         {providerTab==='script'&&<>
         <Card eyebrow="SCRIPT AI" title="Order of providers" actions={<span className="muted small">Main: <b>{providers[ai.activeProvider]?.name||'—'}</b></span>}>
           <p className="muted small">Scripts, script checks, image planning, SEO and trending topics use these providers <b>from top to bottom</b>. Use ↑ ↓ to change the order.</p>
@@ -970,6 +1014,10 @@ function App(){
           <p className="muted small">Model names, temperature and token limits are under Advanced.</p>
         </Card>
         </>}
+        {providerTab==='keys'&&<Card eyebrow="ALL PROVIDERS" title="API keys" actions={<span className="muted small">Keys are stored encrypted and never shown</span>}>
+          <p className="muted small">Every key the app uses, in one place. <b>Edit / replace</b> saves a new key over the old one (also over a key from the server’s .env). Then use <b>Test</b> to check it.</p>
+          <ApiKeysPanel apiJson={apiJson} json={json} busy={aiBusy} results={testResults} onTest={(type,id)=>type==='text'?testAI(id):testMedia(type,id)} onSaved={setAi}/>
+        </Card>}
         {providerTab==='images'&&<>
         <Card eyebrow="SCENE IMAGES" title="Order of providers" actions={<span className="muted small">Main: <b>{ai.media?.imageProviders?.[ai.media?.imageProvider]?.name||'—'}</b></span>}>
           <p className="muted small">Each scene image is made by the first provider; if it fails, the next one makes it. Use ↑ ↓ to change the order.</p>

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getSettings, updateSettings, updateMediaSettings, updateConfig, test, testMedia, updateTtsKeys, ttsVoices, updateTextKey, textModels, updateTextPriority, updateMediaPriority } from '../controllers/aiController.js';
+import { getSettings, updateSettings, updateMediaSettings, updateConfig, test, testMedia, updateTtsKeys, ttsVoices, updateTextKey, textModels, updateTextPriority, updateMediaPriority, getKeys, updateKey } from '../controllers/aiController.js';
 const r = Router();
 r.get('/settings', getSettings);
 r.put('/settings', updateSettings);
@@ -12,5 +12,7 @@ r.put('/text-keys', updateTextKey);
 r.get('/text-models/:provider', textModels);
 r.put('/text-priority', updateTextPriority);
 r.put('/media-priority', updateMediaPriority);
+r.get('/keys', getKeys);
+r.put('/keys/:id', updateKey);
 r.get('/tts-voices/:provider', ttsVoices);
 export default r;

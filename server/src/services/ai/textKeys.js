@@ -25,6 +25,15 @@ export const COMPATIBLE_PROVIDERS = Object.keys(TEXT_CATALOG).filter(p => TEXT_C
 const envValue = name => String(process.env[name] || '').trim();
 // Values from .env at start-up, so removing a dashboard key falls back to them.
 const ORIGINAL = Object.fromEntries(Object.values(TEXT_CATALOG).filter(c => c.envField).map(c => [c.envField, env[c.envField] || '']));
+// Image-only values that a dashboard key can replace (Cloudflare images, Pollinations).
+const ORIGINAL_MEDIA = {cloudflareApiToken: env.cloudflareApiToken || '', cloudflareAccountId: env.cloudflareAccountId || '', pollinationsKey: env.pollinationsKey || ''};
+export function originalEnv(field) { return field in ORIGINAL_MEDIA ? ORIGINAL_MEDIA[field] : (ORIGINAL[field] || ''); }
+// Pollinations key saved in Settings → API keys (images only).
+export function pollinationsKeyFrom(settings) {
+  const saved = settings?.secrets?.mediaKeys?.pollinations;
+  const key = decryptSecret(saved) || '';
+  return {key: key || ORIGINAL_MEDIA.pollinationsKey, saved: Boolean(key), stored: Boolean(saved), fromEnv: !key && Boolean(ORIGINAL_MEDIA.pollinationsKey)};
+}
 
 export function textCredentialsFrom(settings) {
   const saved = settings?.secrets?.textKeys || {};
@@ -32,12 +41,13 @@ export function textCredentialsFrom(settings) {
   for (const [id, c] of Object.entries(TEXT_CATALOG)) {
     const s = saved[id] || {};
     const savedKey = decryptSecret(s.key);
-    const envKey = c.envField ? ORIGINAL[c.envField] : (id === 'cloudflare' ? (env.cloudflareApiToken || envValue('CLOUDFLARE_API_TOKEN')) : id === 'github' ? (envValue('GITHUB_MODELS_TOKEN') || envValue('GITHUB_TOKEN')) : c.envKey ? envValue(c.envKey) : '');
-    const accountId = c.needsAccountId ? String(s.accountId || env.cloudflareAccountId || envValue('CLOUDFLARE_ACCOUNT_ID') || '').trim() : '';
+    const envKey = c.envField ? ORIGINAL[c.envField] : (id === 'cloudflare' ? ORIGINAL_MEDIA.cloudflareApiToken : id === 'github' ? (envValue('GITHUB_MODELS_TOKEN') || envValue('GITHUB_TOKEN')) : c.envKey ? envValue(c.envKey) : '');
+    const accountId = c.needsAccountId ? String(s.accountId || ORIGINAL_MEDIA.cloudflareAccountId || '').trim() : '';
     const baseUrl = c.customBaseUrl ? String(s.baseUrl || envValue('OLLAMA_BASE_URL') || c.baseUrl) : c.baseUrl ? c.baseUrl.replace('{accountId}', encodeURIComponent(accountId)) : '';
     // Ollama counts as set up only once its address is saved (or OLLAMA_BASE_URL is set).
     const addressSet = c.customBaseUrl ? Boolean(s.baseUrl || envValue('OLLAMA_BASE_URL')) : false;
-    out[id] = {key: savedKey || envKey || '', fromEnv: !savedKey && Boolean(envKey), saved: Boolean(savedKey), accountId, baseUrl, addressSet};
+    // stored but unreadable = saved with a different APP_SECRET_KEY (e.g. on another computer).
+    out[id] = {key: savedKey || envKey || '', fromEnv: !savedKey && Boolean(envKey), saved: Boolean(savedKey), unreadable: Boolean(s.key) && !savedKey, accountId, accountFromEnv: c.needsAccountId ? !s.accountId && Boolean(accountId) : false, baseUrl, addressSet};
   }
   return out;
 }
@@ -63,7 +73,18 @@ export function textKeyStatus(settings) {
 export function applyTextKeysToEnv(settings) {
   const creds = textCredentialsFrom(settings);
   for (const [id, c] of Object.entries(TEXT_CATALOG)) if (c.envField) env[c.envField] = creds[id].key || ORIGINAL[c.envField] || '';
+  // Cloudflare: one token + account ID serve both scripts and images.
+  const cf = creds.cloudflare;
+  env.cloudflareApiToken = env.cloudflareToken = cf.key || ORIGINAL_MEDIA.cloudflareApiToken;
+  env.cloudflareAccountId = cf.accountId || ORIGINAL_MEDIA.cloudflareAccountId;
+  env.pollinationsKey = pollinationsKeyFrom(settings).key;
   return creds;
+}
+// Trims quotes, "Bearer " and spaces that come with copy-paste; rejects obvious non-keys.
+export function cleanKey(key) {
+  const k = String(key || '').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/^Bearer\s+/i, '').trim();
+  if (/\s/.test(k) || k.length < 8) throw Object.assign(new Error('That does not look like an API key (too short or has spaces).'), {status: 400});
+  return k.slice(0, 500);
 }
 // Builds the $set/$unset for saving. Blank key keeps the saved one; clear:true removes it.
 export function textKeyUpdate(provider, {key, clear, accountId, baseUrl} = {}) {
@@ -73,9 +94,7 @@ export function textKeyUpdate(provider, {key, clear, accountId, baseUrl} = {}) {
   const base = `secrets.textKeys.${provider}`;
   if (clear) unset[`${base}.key`] = 1;
   else if (typeof key === 'string' && key.trim()) {
-    const k = key.trim().replace(/^Bearer\s+/i, '');
-    if (/\s/.test(k) || k.length < 8) throw Object.assign(new Error('That does not look like an API key (too short or has spaces).'), {status: 400});
-    set[`${base}.key`] = encryptSecret(k.slice(0, 500));
+    set[`${base}.key`] = encryptSecret(cleanKey(key));
   }
   if (c.needsAccountId && typeof accountId === 'string') {
     const a = accountId.trim();

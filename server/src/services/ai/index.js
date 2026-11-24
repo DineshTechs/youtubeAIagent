@@ -7,7 +7,9 @@ import { MockAIProvider } from './mockProvider.js';
 import { GroqProvider, CerebrasProvider, compatibleProvider, listCompatibleModels } from './openAICompatibleProvider.js';
 import { resolvePriority, chainFor, createFallbackProvider } from './textChain.js';
 import { TEXT_CATALOG, COMPATIBLE_PROVIDERS, textCredentialsFrom, textKeyStatus, textConfigured, applyTextKeysToEnv, textKeyUpdate } from './textKeys.js';
-import { ttsCredentialsFrom, ttsKeyStatus } from './ttsKeys.js';
+import { ttsCredentialsFrom, ttsKeyStatus, saveTtsKeys } from './ttsKeys.js';
+import { keyList, keyKind, pollinationsKeyUpdate } from './keyCatalog.js';
+import { checkCloudflare, checkGemini, checkOpenAI } from './keyChecks.js';
 import { FREE_TTS_DEFAULTS } from '../media/freeTts.js';
 
 export const PROVIDERS = ['gemini', 'groq', 'cerebras', ...COMPATIBLE_PROVIDERS, 'openai', 'mock'];
@@ -302,9 +304,11 @@ export async function testMediaProvider(type, provider) {
   if (type === 'image') {
     if (!IMAGE_PROVIDERS.includes(provider)) throw new Error(`Unsupported image provider: ${provider}`);
     if (provider === 'mock') return {ok:true,message:'Mock image provider is ready.'};
-    if (provider === 'gemini'&&!env.geminiKey) throw new Error('GEMINI_API_KEY is not configured.');
-    if (provider === 'openai'&&!env.openaiKey) throw new Error('OPENAI_API_KEY is not configured.');
-    if (provider === 'cloudflare'&&!(env.cloudflareAccountId&&env.cloudflareApiToken)) throw new Error('Cloudflare credentials are not configured.');
+    await getGlobalSettings();
+    // Real sign-in checks (no image is made), so a wrong key shows up here, not mid-video.
+    if (provider === 'gemini') return checkGemini(env.geminiKey);
+    if (provider === 'openai') return checkOpenAI(env.openaiKey);
+    if (provider === 'cloudflare') return checkCloudflare({ token: env.cloudflareApiToken, accountId: env.cloudflareAccountId });
     if (provider === 'pollinations') return {ok:true,message:env.pollinationsKey?'Pollinations API key is configured.':'Pollinations public endpoint will be used (may be rate-limited).'};
     return {ok:true,message:`${provider} credentials are configured.`};
   }
@@ -334,10 +338,34 @@ export async function testMediaProvider(type, provider) {
   return {ok:true,message:`${provider} narration credentials are configured.`};
 }
 
+// Every API key in one list (Settings → AI providers → API keys), and one way to replace any of them.
+export async function listKeys() { return { keys: keyList(await getGlobalSettings()) }; }
+export async function saveKey(id, input = {}) {
+  const kind = keyKind(id);
+  if (!kind) throw Object.assign(new Error(`Unknown key: ${id}`), { status: 400 });
+  const clear = input.clear === true;
+  if (kind === 'text') await saveTextKey(id, { key: input.key, clear, accountId: input.accountId, baseUrl: input.baseUrl });
+  else if (kind === 'tts') await saveTtsKeys({ [id]: clear ? { clear: true } : { key: input.key, ...(typeof input.region === 'string' ? { region: input.region } : {}), ...(typeof input.url === 'string' ? { url: input.url } : {}) } });
+  else {
+    const { set, unset } = pollinationsKeyUpdate({ key: input.key, clear });
+    const update = { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) };
+    if (Object.keys(update).length) await AISettings.updateOne({ key: 'global' }, update, { upsert: true });
+  }
+  return { ...(await listKeys()), settings: await getAISettings() };
+}
+
 export async function testProvider(name) {
   if (!PROVIDERS.includes(name)) throw new Error(`Unsupported AI provider: ${name}`);
-  const provider = makeTextProvider(name, await getGlobalSettings());
-  if (typeof provider.testConnection==='function') return provider.testConnection();
+  const settings = await getGlobalSettings();
+  const provider = makeTextProvider(name, settings);
+  if (typeof provider.testConnection==='function') {
+    try { return await provider.testConnection(); }
+    catch (e) {
+      // Cloudflare's "Authentication error" doesn't say whether the token or the account ID is wrong.
+      if (name === 'cloudflare' && /\b(401|403)\b/.test(String(e.message))) { const c = textCredentialsFrom(settings).cloudflare; await checkCloudflare({ token: c.key, accountId: c.accountId }); }
+      throw e;
+    }
+  }
   return {ok:true,message:'Mock provider is ready.'};
 }
 
