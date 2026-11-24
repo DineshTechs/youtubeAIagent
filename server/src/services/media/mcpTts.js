@@ -206,7 +206,11 @@ export async function mcpSynthesize({url,apiKey,tool:preferredTool,voice,languag
       try{result=await client.callTool(tool.name,buildTtsArgs(tool,{text:spoken,voice,language}));}
       catch(e){
         // A voice copied from another computer or typed by hand is often not a valid AI Awaaz voice id.
-        if(/voice/i.test(String(e?.message||'')))throw new McpError(`${e.message} The saved voice is ${voice?`"${voice}"`:'empty'}. In Settings → AI providers → Narration → AI Awaaz, click "Connect & load voices", pick a voice from the list and save.`,e.status);
+        if(/voice/i.test(String(e?.message||''))){
+          const vp=tool.inputSchema?.properties||{};const vk=Object.keys(vp).find(k=>/voice|speaker/i.test(k));
+          const expects=vk?` AI Awaaz expects "${vk}"${vp[vk]?.description?`: ${String(vp[vk].description).slice(0,200)}`:''}${Array.isArray(vp[vk]?.enum)?` (one of: ${vp[vk].enum.slice(0,12).join(', ')})`:''}.`:'';
+          throw new McpError(`${e.message} The saved voice is ${voice?`"${voice}"`:'empty'}.${expects} In Settings → AI providers → Narration → AI Awaaz, click "Connect & load voices", pick a voice from the list and save.`,e.status);
+        }
         throw e;
       }
       parts.push(await audioFromResult(result,fetchImpl,{mcpUrl:url}));
@@ -238,7 +242,7 @@ async function describeWith(client,tools,language){
       const r=await client.callTool(voicesTool.name,args);
       const data=r?.structuredContent||(()=>{try{return JSON.parse(textOf(r));}catch{return null;}})();
       const list=Array.isArray(data)?data:(data?.voices||data?.items||data?.data||[]);
-      voices=list.map(v=>typeof v==='string'?{id:v,name:v}:{id:String(v.id||v.voice_id||v.voiceId||v.name||''),name:[v.name||v.display_name||v.id,v.language||v.lang||v.gender].filter(Boolean).join(' · ')}).filter(v=>v.id);
+      voices=list.map(v=>typeof v==='string'?{id:v,name:v}:{id:String(v.voice_reference||v.voiceReference||v.voice_ref||v.voiceRef||v.reference||v.ref||v.voice_id||v.voiceId||v.id||v.uuid||v.slug||v.key||v.code||v.name||''),name:[v.name||v.display_name||v.id,v.language||v.lang||v.gender].filter(Boolean).join(' · ')}).filter(v=>v.id);
     }catch{}
   }
   return {tools:tools.map(t=>({name:t.name,description:String(t.description||'').slice(0,200),arguments:props(t)})),ttsTool:tts?.name||null,voicesTool:voicesTool?.name||null,enhanceTool:findEnhanceTool(tools)?.name||null,account,voices};

@@ -48,8 +48,8 @@ test('a rejected AI Awaaz voice says which voice and how to fix it', async () =>
     const b = JSON.parse(init.body);
     if (b.method === 'initialize') return reply(b.id, {protocolVersion: '2025-06-18', capabilities: {}});
     if (!b.id) return new Response('', {status: 202});
-    if (b.method === 'tools/list') return reply(b.id, {tools: [{name: 'generate_speech', description: 'text to speech', inputSchema: {type: 'object', properties: {text: {type: 'string'}, voice: {type: 'string'}}}}]});
+    if (b.method === 'tools/list') return reply(b.id, {tools: [{name: 'generate_speech', description: 'text to speech', inputSchema: {type: 'object', properties: {text: {type: 'string'}, voice: {type: 'string', description: 'Voice reference such as hi_female_1 (see list_voices)'}}}}]});
     return reply(b.id, {isError: true, content: [{type: 'text', text: 'The voice reference format is invalid.'}]});
   };
-  await assert.rejects(mcpSynthesize({url: 'https://voice-test.aiawaaz.io/api/mcp', apiKey: 'k', voice: 'Priya', language: 'hi', text: 'नमस्ते', sleep: async () => {}, gapMs: 0}, fake), /The saved voice is "Priya"\. .*Connect & load voices/);
+  await assert.rejects(mcpSynthesize({url: 'https://voice-test.aiawaaz.io/api/mcp', apiKey: 'k', voice: 'Priya', language: 'hi', text: 'नमस्ते', sleep: async () => {}, gapMs: 0}, fake), /The saved voice is "Priya"\. AI Awaaz expects "voice": Voice reference such as hi_female_1 .*Connect & load voices/);
 });
