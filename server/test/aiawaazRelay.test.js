@@ -53,3 +53,29 @@ test('a rejected AI Awaaz voice says which voice and how to fix it', async () =>
   };
   await assert.rejects(mcpSynthesize({url: 'https://voice-test.aiawaaz.io/api/mcp', apiKey: 'k', voice: 'Priya', language: 'hi', text: 'नमस्ते', sleep: async () => {}, gapMs: 0}, fake), /The saved voice is "Priya"\. AI Awaaz expects "voice": Voice reference such as hi_female_1 .*Connect & load voices/);
 });
+
+import {matchVoice} from '../src/services/media/mcpTts.js';
+test('a saved voice name is turned into its AI Awaaz voice reference', async () => {
+  const voices = [{id: 'platform:5316', name: 'Muskaan · hi'}, {id: 'mine:42', name: 'My clone'}];
+  assert.equal(matchVoice(voices, 'Muskaan'), 'platform:5316');
+  assert.equal(matchVoice(voices, 'muskaan'), 'platform:5316');
+  assert.equal(matchVoice(voices, 'mine:42'), 'mine:42');
+  assert.equal(matchVoice(voices, 'Nobody'), '');
+  resetMcpSessions?.();
+  const calls = [];
+  const reply = (id, result) => new Response(JSON.stringify({jsonrpc: '2.0', id, result}), {status: 200, headers: {'content-type': 'application/json'}});
+  const fake = async (_u, init) => {
+    const b = JSON.parse(init.body);
+    if (b.method === 'initialize') return reply(b.id, {protocolVersion: '2025-06-18', capabilities: {}});
+    if (!b.id) return new Response('', {status: 202});
+    if (b.method === 'tools/list') return reply(b.id, {tools: [
+      {name: 'generate_speech', description: 'text to speech', inputSchema: {type: 'object', properties: {text: {type: 'string'}, voice: {type: 'string'}}}},
+      {name: 'list_voices', description: 'voices', inputSchema: {type: 'object', properties: {language: {type: 'string'}}}}]});
+    calls.push(b.params);
+    if (b.params.name === 'list_voices') return reply(b.id, {structuredContent: {voices: [{voice: 'platform:5316', name: 'Muskaan', language: 'hi'}]}});
+    return reply(b.id, {content: [{type: 'audio', data: Buffer.alloc(2000, 1).toString('base64'), mimeType: 'audio/mpeg'}]});
+  };
+  const audio = await mcpSynthesize({url: 'https://name-test.aiawaaz.io/api/mcp', apiKey: 'k', voice: 'Muskaan', language: 'hi', text: 'नमस्ते', sleep: async () => {}, gapMs: 0}, fake);
+  assert.equal(audio.length, 2000);
+  assert.equal(calls.at(-1).arguments.voice, 'platform:5316');
+});

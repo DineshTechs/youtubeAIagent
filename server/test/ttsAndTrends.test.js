@@ -89,12 +89,12 @@ test('MCP: finds the speech tool and maps its arguments', () => {
 
 test('MCP: initialize, session id, SSE replies, inline audio', async () => {
   const {f, seen} = fakeMcp({tools, sse: true, call: () => ({content: [{type: 'audio', data: MP3.toString('base64'), mimeType: 'audio/mpeg'}]})});
-  const audio = await mcpSynthesize({url: 'https://app.aiawaaz.io/api/mcp', apiKey: 'secret', voice: 'v1', language: 'hi', text: 'नमस्ते'}, f);
+  const audio = await mcpSynthesize({url: 'https://app.aiawaaz.io/api/mcp', apiKey: 'secret', voice: 'platform:v1', language: 'hi', text: 'नमस्ते'}, f);
   assert.equal(audio.length, MP3.length);
   assert.deepEqual(seen.map(s => s.method), ['initialize', 'notifications/initialized', 'tools/list', 'tools/call']);
   assert.equal(seen[2].headers['Mcp-Session-Id'], 'sess-1');
   assert.equal(seen[3].params.name, 'generate_voiceover');
-  assert.equal(seen[3].params.arguments.voice_id, 'v1');
+  assert.equal(seen[3].params.arguments.voice_id, 'platform:v1');
 });
 
 test('MCP: audio returned as a download link or JSON base64', async () => {

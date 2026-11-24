@@ -198,6 +198,7 @@ export async function mcpSynthesize({url,apiKey,tool:preferredTool,voice,languag
   return withSession({url,apiKey,sleep,gapMs},fetchImpl,async({client,tools})=>{
     const tool=findTtsTool(tools,preferredTool);
     if(!tool)throw new McpError(`no text-to-speech tool found. The server offers: ${tools.map(t=>t.name).join(', ')||'no tools'}.`);
+    voice=await resolveVoice(client,tools,voice,language);
     const enhancer=enhance?findEnhanceTool(tools):null;
     const parts=[];
     for(const piece of splitByChars(text)){
@@ -218,6 +219,29 @@ export async function mcpSynthesize({url,apiKey,tool:preferredTool,voice,languag
     if(!parts.length)throw new McpError('nothing to speak.');
     return Buffer.concat(parts);
   });
+}
+// AI Awaaz wants the "voice" value from list_voices (e.g. "platform:5316"). A saved display
+// name such as "Muskaan" is looked up in that list and swapped for its reference.
+const voiceRefCache=new Map();
+export function matchVoice(voices,wanted){
+  const w=String(wanted||'').trim().toLowerCase();if(!w)return '';
+  const name=v=>String(v.name||'').split(' · ')[0].trim().toLowerCase();
+  return (voices.find(v=>String(v.id).toLowerCase()===w)||voices.find(v=>name(v)===w)||voices.find(v=>name(v).startsWith(w)))?.id||'';
+}
+async function resolveVoice(client,tools,voice,language){
+  const v=String(voice||'').trim();
+  if(!v||/^[a-z_-]+:\S+$/i.test(v))return v;                  // empty or already a reference
+  const voicesTool=findVoicesTool(tools);if(!voicesTool)return v;
+  const key=`${language}|${v}`;if(voiceRefCache.has(key))return voiceRefCache.get(key);
+  try{const found=matchVoice(await listVoicesWith(client,voicesTool,language),v);if(found){voiceRefCache.set(key,found);return found;}}catch{}
+  return v;
+}
+async function listVoicesWith(client,voicesTool,language){
+  const args={};const lk=pick(props(voicesTool),/^(language|lang|language_?code|locale)$/i);if(lk)args[lk]=language;
+  const r=await client.callTool(voicesTool.name,args);
+  const data=r?.structuredContent||(()=>{try{return JSON.parse(textOf(r));}catch{return null;}})();
+  const list=Array.isArray(data)?data:(data?.voices||data?.items||data?.data||[]);
+  return list.map(v=>typeof v==='string'?{id:v,name:v}:{id:String((typeof v.voice==='string'&&v.voice)||v.voice_reference||v.voiceReference||v.voice_ref||v.voiceRef||v.reference||v.ref||v.voice_id||v.voiceId||v.id||v.uuid||v.slug||v.key||v.code||v.name||''),name:[v.name||v.display_name||v.id,v.language||v.lang||v.gender].filter(Boolean).join(' · ')}).filter(v=>v.id);
 }
 // For Settings: tools, the detected speech tool and (if available) voices.
 // Repeated clicks on "Connect & load voices" within a minute reuse the last answer.
@@ -242,7 +266,7 @@ async function describeWith(client,tools,language){
       const r=await client.callTool(voicesTool.name,args);
       const data=r?.structuredContent||(()=>{try{return JSON.parse(textOf(r));}catch{return null;}})();
       const list=Array.isArray(data)?data:(data?.voices||data?.items||data?.data||[]);
-      voices=list.map(v=>typeof v==='string'?{id:v,name:v}:{id:String(v.voice_reference||v.voiceReference||v.voice_ref||v.voiceRef||v.reference||v.ref||v.voice_id||v.voiceId||v.id||v.uuid||v.slug||v.key||v.code||v.name||''),name:[v.name||v.display_name||v.id,v.language||v.lang||v.gender].filter(Boolean).join(' · ')}).filter(v=>v.id);
+      voices=list.map(v=>typeof v==='string'?{id:v,name:v}:{id:String((typeof v.voice==='string'&&v.voice)||v.voice_reference||v.voiceReference||v.voice_ref||v.voiceRef||v.reference||v.ref||v.voice_id||v.voiceId||v.id||v.uuid||v.slug||v.key||v.code||v.name||''),name:[v.name||v.display_name||v.id,v.language||v.lang||v.gender].filter(Boolean).join(' · ')}).filter(v=>v.id);
     }catch{}
   }
   return {tools:tools.map(t=>({name:t.name,description:String(t.description||'').slice(0,200),arguments:props(t)})),ttsTool:tts?.name||null,voicesTool:voicesTool?.name||null,enhanceTool:findEnhanceTool(tools)?.name||null,account,voices};
