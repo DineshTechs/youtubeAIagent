@@ -13,6 +13,7 @@ function harness({profiles = [{id: 'p1', name: 'Kalyug', scheduleTime: '18:00'}]
     calls.push({method, path, body});
     if (method === 'GET' && path.startsWith('/videos?')) { const q = new URLSearchParams(path.split('?')[1]); return Object.values(videos).filter(v => v.profile.id === q.get('seriesId') && (!q.get('status') || v.status === q.get('status'))); }
     if (method === 'GET' && path.startsWith('/videos/')) { const v = videos[path.split('/')[2]]; if (!v) throw new Error('Video not found'); return v; }
+    if (method === 'GET' && path.startsWith('/autopilot/runs/')) { const r = {r1: {_id: 'r1', seriesId: 'p1', status: 'WAITING'}, r2: {_id: 'r2', seriesId: 'p1', status: 'GENERATING'}, r9: {_id: 'r9', seriesId: 'p9', status: 'WAITING'}}[path.split('/')[3]]; if (!r) throw new Error('Autopilot slot not found.'); return r; }
     if (path === '/agent/generate') return {jobId: 'j1', profile: {language: 'Hindi', format: 'Story Short', durationSec: 55}};
     if (path.startsWith('/youtube/preview/')) return {metadata: {title: 'SEO title', privacyStatus: 'private'}, youtube: {channelTitle: 'Kalyug TV'}, seoReport: {score: 90}, seo: {focusKeyword: 'kahani'}, problems: []};
     if (path.startsWith('/youtube/publish/')) return {status: body.schedule ? 'SCHEDULED' : 'PUBLISHED', url: 'https://www.youtube.com/watch?v=abc', metadata: {title: 'SEO title'}, seoReport: {score: 90}};
@@ -141,4 +142,19 @@ test('"✅ Approve" on the ready notification asks once, then approves (only thi
   const stranger = harness();
   await stranger.press('p:vx');
   assert.equal(stranger.calls.filter(c => c.method === 'POST').length, 0, 'another profile\'s video is refused');
+});
+
+test('"Make a new video anyway" on an Autopilot waiting message asks first, then starts it', async () => {
+  const h = harness();
+  await h.press('w:r1');
+  assert.match(h.sent.filter(s => s.type === 'send').at(-1).text, /even though the previous one is not published/);
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 0, 'nothing started before confirming');
+  await h.press(h.button('Yes, make it').callback_data);
+  assert.ok(h.calls.find(c => c.method === 'POST' && c.path === '/autopilot/runs/r1/generate'));
+  const busy = harness();
+  await busy.press('W:r2');
+  assert.match(busy.sent.filter(s => s.type === 'send').at(-1).text, /already generating/);
+  const stranger = harness();
+  await stranger.press('W:r9');
+  assert.equal(stranger.calls.filter(c => c.method === 'POST').length, 0, 'another profile is refused');
 });

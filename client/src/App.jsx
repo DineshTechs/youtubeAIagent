@@ -296,9 +296,9 @@ const HOOK_OPTIONS=['Curiosity','Question','Surprise','Emotional','Problem / Sol
 const DURATION_OPTIONS=[30,35,45,55,60,90];
 const PROFILE_SECTIONS=[['channel','Channel'],['content','Content rules'],['voice','Voice & captions'],['youtube','YouTube'],['autopilot','Autopilot'],['telegram','Telegram'],['research','Research']];
 const DAY_NAMES=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-const DEFAULT_AUTOPILOT={enabled:false,times:['12:30','19:30'],days:[0,1,2,3,4,5,6],leadMinutes:90,minQaScore:70,visibility:'public',blockStaleImages:true};
-function autopilotFormFrom(a={}){const x=a&&typeof a==='object'?a:{};return {enabled:x.enabled===true,times:Array.isArray(x.times)&&x.times.length?[...x.times]:[...DEFAULT_AUTOPILOT.times],days:Array.isArray(x.days)&&x.days.length?[...x.days]:[...DEFAULT_AUTOPILOT.days],leadMinutes:Number(x.leadMinutes)||90,minQaScore:Number.isFinite(Number(x.minQaScore))&&x.minQaScore!==undefined?Number(x.minQaScore):70,visibility:['public','unlisted','private'].includes(x.visibility)?x.visibility:'public',blockStaleImages:x.blockStaleImages!==false};}
-const RUN_LABEL={GENERATING:'Making video',APPROVED:'Uploading',SCHEDULED:'Scheduled on YouTube',PUBLISHED:'Uploaded',NEEDS_ATTENTION:'Needs attention',FAILED:'Failed',SKIPPED:'Skipped'};
+const DEFAULT_AUTOPILOT={enabled:false,times:['12:30','19:30'],days:[0,1,2,3,4,5,6],leadMinutes:90,minQaScore:70,visibility:'public',blockStaleImages:true,waitForPublish:true};
+function autopilotFormFrom(a={}){const x=a&&typeof a==='object'?a:{};return {enabled:x.enabled===true,times:Array.isArray(x.times)&&x.times.length?[...x.times]:[...DEFAULT_AUTOPILOT.times],days:Array.isArray(x.days)&&x.days.length?[...x.days]:[...DEFAULT_AUTOPILOT.days],leadMinutes:Number(x.leadMinutes)||90,minQaScore:Number.isFinite(Number(x.minQaScore))&&x.minQaScore!==undefined?Number(x.minQaScore):70,visibility:['public','unlisted','private'].includes(x.visibility)?x.visibility:'public',blockStaleImages:x.blockStaleImages!==false,waitForPublish:x.waitForPublish!==false};}
+const RUN_LABEL={WAITING:'Waiting for previous video',GENERATING:'Making video',APPROVED:'Uploading',SCHEDULED:'Scheduled on YouTube',PUBLISHED:'Uploaded',NEEDS_ATTENTION:'Needs attention',FAILED:'Failed',SKIPPED:'Skipped'};
 const EMPTY_TG={enabled:false,commandsEnabled:false,hasToken:false,botUsername:'',chats:[],events:{},eventCatalog:[],sendVideoOnReady:true,lastError:'',lastSentAt:null};
 const EMPTY_YT_ACCOUNT={clientId:'',hasClientSecret:false,redirectUri:'',defaultRedirectUri:'http://127.0.0.1:4000/api/youtube/callback',publishEnabled:false,configured:false,connected:false};
 const YT_CATEGORIES=[['1','Film & Animation'],['2','Autos & Vehicles'],['10','Music'],['15','Pets & Animals'],['17','Sports'],['19','Travel & Events'],['20','Gaming'],['22','People & Blogs'],['23','Comedy'],['24','Entertainment'],['25','News & Politics'],['26','Howto & Style'],['27','Education'],['28','Science & Technology'],['29','Nonprofits & Activism']];
@@ -677,6 +677,7 @@ function App(){
  const [apStatus,setApStatus]=useState(null),[apMsg,setApMsg]=useState('');
  async function loadAutopilot(id=selectedSeriesId){if(!id)return;try{setApStatus(await apiJson(`/autopilot/${id}`,{},0));}catch(e){setApMsg(e.message)}}
  useEffect(()=>{setApStatus(null);setApMsg('');if(profileSection!=='autopilot'||!selectedSeriesId)return;loadAutopilot();const t=setInterval(()=>loadAutopilot(),30000);return()=>clearInterval(t);},[profileSection,selectedSeriesId]);
+ async function autopilotMakeAnyway(runId){if(!window.confirm('Make a new video for this time now, even though the previous one is not published yet?'))return;try{await apiJson(`/autopilot/runs/${runId}/generate`,{method:'POST'},0);setApMsg('Making the new video.');await loadAutopilot();await refresh();}catch(e){setApMsg(e.message)}}
  async function autopilotRunNow(){if(!window.confirm('Make one automatic video now? If it passes the checks it is uploaded to YouTube as soon as it is ready, without review.'))return;try{await apiJson(`/autopilot/${selectedSeriesId}/run-now`,{method:'POST'},0);setApMsg('Started. It appears below and on the Create page.');await loadAutopilot();await refresh();}catch(e){setApMsg(e.message)}}
  // Per-profile YouTube connection (saved separately from the profile: the secret is write-only).
  const ytAcc={...EMPTY_YT_ACCOUNT,...(editSeries?.youtubeAccount||{})};
@@ -910,6 +911,7 @@ function App(){
              <Field label="Minimum QA score to publish" hint="Below this the video waits for you instead."><input type="number" min="0" max="100" value={seriesForm.autopilot.minQaScore} onChange={e=>setAP('minQaScore',Number(e.target.value))}/></Field>
            </div>
            <Toggle checked={seriesForm.autopilot.blockStaleImages} onChange={v=>setAP('blockStaleImages',v)} label="Don't publish if an image may not match the narration" hint="The video waits for your review instead."/>
+           <Toggle checked={seriesForm.autopilot.waitForPublish} onChange={v=>setAP('waitForPublish',v)} label="Wait until the previous video is published" hint="If a video is still waiting for approval (or not uploaded) at the next time, no new video is made; you get a Telegram message instead. Approve it and it is published at that time."/>
            {selectedSeriesId&&apStatus&&<>
              <h5 className="subHead">Next times</h5>
              <div className="tagList">{apStatus.settings.enabled?apStatus.nextSlots.map(d=><span key={d}>{new Date(d).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span>):<span>Autopilot is off{seriesForm.autopilot.enabled?' (save the profile to turn it on)':''}</span>}</div>
@@ -918,7 +920,7 @@ function App(){
                <div><b>{new Date(r.slotAt).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</b>{r.manual&&<small className="muted"> · run now</small>}</div>
                <span className={`pill run-${r.status.toLowerCase()}`}>{RUN_LABEL[r.status]||r.status}</span>
                <small className="muted apLog">{r.error||r.log?.at(-1)?.message||''}</small>
-               <div className="row">{r.videoId&&<button className="ghost small" onClick={()=>openVideo(String(r.videoId))}>Video</button>}{r.youtubeVideoId&&<a className="btnLink" href={`https://youtu.be/${r.youtubeVideoId}`} target="_blank" rel="noreferrer">YouTube</a>}</div>
+               <div className="row">{r.status==='WAITING'&&r.waitingForVideoId&&<button className="ghost small" onClick={()=>openVideo(String(r.waitingForVideoId))}>Waiting for</button>}{r.status==='WAITING'&&<button className="ghost small" onClick={()=>autopilotMakeAnyway(String(r._id))}>Make new anyway</button>}{r.videoId&&<button className="ghost small" onClick={()=>openVideo(String(r.videoId))}>Video</button>}{r.youtubeVideoId&&<a className="btnLink" href={`https://youtu.be/${r.youtubeVideoId}`} target="_blank" rel="noreferrer">YouTube</a>}</div>
              </div>)}</div>}
              <div className="row wrap"><button className="ghost" onClick={autopilotRunNow} disabled={!apStatus.youtube.ready||profileDirty}>Run once now</button><button className="ghost" onClick={()=>loadAutopilot()}>Refresh</button></div>
            </>}

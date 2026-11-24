@@ -55,3 +55,51 @@ test('upload is scheduled for the slot when there is time, otherwise immediate',
   assert.deepEqual(uploadRequest(slot, s, new Date('2026-11-19T13:55:00Z')), {privacyStatus: 'public'});
   assert.deepEqual(uploadRequest(slot, {...s, visibility: 'unlisted'}, new Date('2026-11-19T10:00:00Z')), {privacyStatus: 'unlisted'});
 });
+
+import {pickBlocker, waitingDecision, waitingMessage, blockerReason} from '../src/services/autopilot/autopilotRules.js';
+const apOn = normalizeAutopilot({enabled: true, graceMinutes: 120});
+const ago = h => new Date(Date.now() - h * 3600000).toISOString();
+
+test('waiting is on by default and can be turned off', () => {
+  assert.equal(normalizeAutopilot({}).waitForPublish, true);
+  assert.equal(normalizeAutopilot({waitForPublish: false}).waitForPublish, false);
+});
+
+test('the oldest video that is not on YouTube yet blocks the next slot', () => {
+  const videos = [
+    {_id: 'a', title: 'Old published', status: 'PUBLISHED', createdAt: ago(48)},
+    {_id: 'b', title: 'Needs approval', status: 'AWAITING_APPROVAL', createdAt: ago(20)},
+    {_id: 'c', title: 'Being made', status: 'VIDEO_RENDERING', createdAt: ago(1)},
+    {_id: 'd', title: 'Failed', status: 'FAILED', createdAt: ago(30)},
+    {_id: 'e', title: 'Scheduled', status: 'SCHEDULED', createdAt: ago(25)}
+  ];
+  const b = pickBlocker({videos});
+  assert.equal(b.videoId, 'b');
+  assert.equal(b.reason, 'is waiting for your approval');
+  assert.equal(pickBlocker({videos: videos.filter(v => v._id !== 'b')}).reason, 'is still being made');
+  assert.equal(pickBlocker({videos: [videos[0], videos[3], videos[4]]}), null);
+  assert.equal(pickBlocker({videos: [], generatingRuns: [{_id: 'r', videoId: null}]}).reason, 'is still being made');
+  assert.equal(blockerReason('APPROVED'), 'is approved but not on YouTube yet');
+});
+
+test('a waiting slot: wait, publish the approved video, make a new one, or give up when time passes', () => {
+  const slotAt = new Date(Date.now() + 60 * 60000);
+  const run = {slotAt};
+  const waiting = {videoId: 'b', title: 'Needs approval', status: 'AWAITING_APPROVAL', reason: 'is waiting for your approval'};
+  assert.deepEqual(waitingDecision({run, blocker: waiting, settings: apOn}), {action: 'wait', videoId: 'b'});
+  const approved = {...waiting, status: 'APPROVED'};
+  assert.equal(waitingDecision({run, blocker: approved, settings: apOn}).action, 'take');
+  assert.equal(waitingDecision({run, blocker: approved, settings: apOn, heldVideoIds: ['b']}).action, 'wait', 'never two slots for one video');
+  assert.equal(waitingDecision({run, blocker: null, settings: apOn}).action, 'generate');
+  const late = waitingDecision({run: {slotAt: new Date(Date.now() - 3 * 3600000)}, blocker: waiting, settings: apOn});
+  assert.equal(late.action, 'skip');
+  assert.match(late.message, /No new video was made/);
+  assert.equal(waitingDecision({run, blocker: waiting, settings: {...apOn, enabled: false}}).action, 'skip');
+});
+
+test('the Telegram message says why and what to do', () => {
+  const m = waitingMessage({title: 'Honest woodcutter', status: 'AWAITING_APPROVAL', reason: 'is waiting for your approval'}, '24 Nov 2026, 7:30 pm');
+  assert.match(m, /No new video for 24 Nov 2026, 7:30 pm: "Honest woodcutter" is waiting for your approval/);
+  assert.match(m, /Approve it and it is published at this time/);
+  assert.doesNotMatch(waitingMessage({title: 'X', status: 'VIDEO_RENDERING', reason: 'is still being made'}, 'now'), /Approve it/);
+});

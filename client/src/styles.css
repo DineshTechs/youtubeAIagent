@@ -354,7 +354,7 @@ button.small{padding:5px 10px;font-size:12.5px}
 .dayChips button{padding:6px 11px;font-size:12.5px;border-radius:99px}.dayChips .filterActive{background:var(--text);color:var(--bg)}
 .apRuns{display:grid;gap:6px}.apRun{display:grid;grid-template-columns:170px 150px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radiusSm);background:var(--surface2)}
 .apLog{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.apRun .row{display:flex;gap:6px}
-.pill.run-scheduled,.pill.run-published{background:var(--goodSoft);color:var(--good)}.pill.run-needs_attention,.pill.run-skipped{background:var(--warnSoft);color:var(--warn)}.pill.run-failed{background:var(--badSoft);color:var(--bad)}.pill.run-generating,.pill.run-approved{background:var(--infoSoft);color:#bfdbfe}
+.pill.run-scheduled,.pill.run-published{background:var(--goodSoft);color:var(--good)}.pill.run-needs_attention,.pill.run-skipped{background:var(--warnSoft);color:var(--warn)}.pill.run-failed{background:var(--badSoft);color:var(--bad)}.pill.run-waiting{background:var(--warnSoft);color:var(--warn)}.pill.run-generating,.pill.run-approved{background:var(--infoSoft);color:#bfdbfe}
 @media (max-width:900px){.apRun{grid-template-columns:1fr}}
 .trendIdeas{display:grid;gap:6px;margin-top:10px}.trendIdea{display:grid;gap:2px;text-align:left;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:var(--radiusSm);white-space:normal}
 .trendIdea:hover{border-color:var(--accent)}.trendIdea small{color:var(--muted);font-weight:500}

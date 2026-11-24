@@ -22,7 +22,9 @@ export function normalizeAutopilot(raw={},{timezone='Asia/Kolkata'}={}){
     graceMinutes:clamp(a.graceMinutes,0,360,120),    // still make a slot this long after its time (e.g. app was off)
     minQaScore:clamp(a.minQaScore,0,100,70),
     visibility:['public','unlisted','private'].includes(a.visibility)?a.visibility:'public',
-    blockStaleImages:a.blockStaleImages!==false
+    blockStaleImages:a.blockStaleImages!==false,
+    // Don't make a new video while the previous one is still not published.
+    waitForPublish:a.waitForPublish!==false
   };
 }
 
@@ -66,4 +68,33 @@ export function uploadRequest(slotAt,settings,now=new Date()){
   const slot=new Date(slotAt);
   if(settings.visibility==='public'&&slot.getTime()-now.getTime()>=10*60000)return {publishAt:slot.toISOString()};
   return {privacyStatus:settings.visibility};
+}
+
+// ---- Waiting for the previous video ----------------------------------------
+// A new slot does not start a new video while an earlier one of the same profile
+// is not on YouTube yet. Once that one is approved, it is published in the waiting slot.
+export const MAKING_STATUSES=['QUEUED','PLANNED','SCRIPT_GENERATED','SCRIPT_QA','ASSETS_GENERATING','VIDEO_RENDERING','VIDEO_QA'];
+export const UNPUBLISHED_STATUSES=[...MAKING_STATUSES,'SCENE_REVIEW','AWAITING_APPROVAL','APPROVED','UPLOADING'];
+const REASON={SCENE_REVIEW:'is waiting for you to finish the scene changes',AWAITING_APPROVAL:'is waiting for your approval',APPROVED:'is approved but not on YouTube yet',UPLOADING:'is still uploading'};
+export function blockerReason(status){return MAKING_STATUSES.includes(status)?'is still being made':REASON[status]||`is ${String(status||'').toLowerCase().replace(/_/g,' ')}`;}
+// videos: this profile's videos; generatingRuns: runs still GENERATING (a job may not have a video yet).
+export function pickBlocker({videos=[],generatingRuns=[]}={}){
+  const open=videos.filter(v=>UNPUBLISHED_STATUSES.includes(v.status)).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+  if(open.length){const v=open[0];return {videoId:String(v._id),title:v.title||'Untitled video',status:v.status,reason:blockerReason(v.status),createdAt:v.createdAt};}
+  const run=generatingRuns.find(r=>!r.videoId);
+  if(run)return {videoId:null,runId:String(run._id),title:'The previous automatic video',status:'QUEUED',reason:'is still being made'};
+  return null;
+}
+// What a waiting run should do now.
+export function waitingDecision({run,blocker,settings,now=new Date(),heldVideoIds=[]}){
+  if(!settings.enabled)return {action:'skip',message:'Autopilot was turned off.'};
+  if(now.getTime()>new Date(run.slotAt).getTime()+settings.graceMinutes*60000)
+    return {action:'skip',message:`Time passed while waiting: ${blocker?`"${blocker.title}" ${blocker.reason}`:'the previous video was not published'}. No new video was made.`};
+  if(!blocker)return {action:'generate',message:'The previous video is published; making the new one.'};
+  if(blocker.status==='APPROVED'&&blocker.videoId&&!heldVideoIds.includes(blocker.videoId))
+    return {action:'take',videoId:blocker.videoId,message:`"${blocker.title}" was approved; it is published in this slot instead of making a new video.`};
+  return {action:'wait',videoId:blocker.videoId};
+}
+export function waitingMessage(blocker,slotLabel){
+  return `No new video for ${slotLabel}: "${blocker.title}" ${blocker.reason}. A new video is made only after the previous one is published.${blocker.status==='AWAITING_APPROVAL'||blocker.status==='APPROVED'?' Approve it and it is published at this time.':''}`;
 }

@@ -5,7 +5,7 @@ import Series from '../../models/Series.js';
 import Video from '../../models/Video.js';
 import GenerationJob from '../../models/GenerationJob.js';
 import AutopilotRun from '../../models/AutopilotRun.js';
-import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest} from './autopilotRules.js';
+import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,UNPUBLISHED_STATUSES} from './autopilotRules.js';
 import {internalApi} from '../telegram/botRunner.js';
 import {notify} from '../telegram/notifier.js';
 import {readiness} from '../youtube/youtubeAccount.js';
@@ -32,6 +32,64 @@ async function skipSlot(series,slotAt,message){
   try{await AutopilotRun.create({seriesId:series._id,slotAt,status:'SKIPPED',error:message,log:[{message}]});}
   catch(e){if(e?.code===11000)return;throw e;}
   notify('autopilot',{profileId:String(series._id),profileName:series.name,title:`Autopilot: slot ${slotLabel(slotAt,series.uploadSettings?.timezone)}`,message});
+}
+
+// ---- Waiting for the previous video to be published ----
+async function blockerFor(seriesId,{excludeRunId}={}){
+  const [videos,generatingRuns]=await Promise.all([
+    Video.find({seriesId,status:{$in:UNPUBLISHED_STATUSES}}).select('title status createdAt').lean(),
+    AutopilotRun.find({seriesId,status:'GENERATING',...(excludeRunId?{_id:{$ne:excludeRunId}}:{})}).select('videoId').lean()
+  ]);
+  return pickBlocker({videos,generatingRuns});
+}
+// Videos another run is already publishing (so two slots never take the same video).
+async function heldVideoIds(seriesId,exceptRunId){
+  const runs=await AutopilotRun.find({seriesId,status:'APPROVED',videoId:{$ne:null},_id:{$ne:exceptRunId}}).select('videoId').lean();
+  return runs.map(r=>String(r.videoId));
+}
+function waitingButtons(blocker,runId){
+  const rows=[];
+  if(blocker.videoId&&blocker.status==='AWAITING_APPROVAL')rows.push([{text:'✅ Approve',callback_data:`p:${blocker.videoId}`},{text:'🎞 Open video',callback_data:`o:${blocker.videoId}`}]);
+  else if(blocker.videoId)rows.push([{text:'🎞 Open video',callback_data:`o:${blocker.videoId}`}]);
+  rows.push([{text:'🆕 Make a new video anyway',callback_data:`w:${runId}`}]);
+  return rows;
+}
+async function createWaitingRun(series,slotAt,blocker){
+  const label=slotLabel(slotAt,series.uploadSettings?.timezone);
+  // Already approved and nobody is publishing it: publish it in this slot (no new video).
+  if(blocker.status==='APPROVED'&&blocker.videoId&&!(await heldVideoIds(series._id,null)).includes(blocker.videoId)){
+    try{return await AutopilotRun.create({seriesId:series._id,slotAt,status:'APPROVED',videoId:blocker.videoId,log:[{message:`"${blocker.title}" is approved but not on YouTube yet, so it is published at ${label} instead of making a new video.`}]});}
+    catch(e){if(e?.code===11000)return null;throw e;}
+  }
+  const message=waitingMessage(blocker,label);
+  let run;
+  try{run=await AutopilotRun.create({seriesId:series._id,slotAt,status:'WAITING',waitingForVideoId:blocker.videoId||null,error:null,log:[{message}]});}
+  catch(e){if(e?.code===11000)return null;throw e;}
+  notify('autopilot',{profileId:String(series._id),profileName:series.name,videoId:blocker.videoId||undefined,title:`Autopilot: waiting before ${label}`,message,buttons:waitingButtons(blocker,String(run._id))});
+  return run;
+}
+async function advanceWaiting(run,series,settings,now){
+  const blocker=await blockerFor(series._id,{excludeRunId:run._id});
+  const d=waitingDecision({run,blocker,settings,now,heldVideoIds:await heldVideoIds(series._id,run._id)});
+  if(d.action==='skip')return note(run,{status:'SKIPPED',error:d.message,waitingForVideoId:null,nextActionAt:null},d.message);
+  if(d.action==='take')return note(run,{status:'APPROVED',videoId:d.videoId,waitingForVideoId:null,error:null,nextActionAt:null},d.message);
+  if(d.action==='generate'){
+    await note(run,{status:'GENERATING',waitingForVideoId:null,error:null},d.message);
+    try{await startGeneration(run,series);}catch(e){await problem(run,series,'FAILED',`Could not start generation: ${e.message}`);}
+    return;
+  }
+  if(String(d.videoId||'')!==String(run.waitingForVideoId||''))await note(run,{waitingForVideoId:d.videoId||null});
+}
+// "Make a new video anyway" (dashboard or Telegram) for a waiting slot.
+export async function generateAnyway(runId){
+  const run=await AutopilotRun.findById(runId).lean();
+  if(!run)throw Object.assign(new Error('Autopilot slot not found.'),{status:404});
+  if(run.status!=='WAITING')throw Object.assign(new Error(`This slot is ${String(run.status).toLowerCase().replace(/_/g,' ')}, not waiting.`),{status:409});
+  const series=await Series.findById(run.seriesId).select('name autopilot uploadSettings').lean();
+  if(!series)throw Object.assign(new Error('Profile not found.'),{status:404});
+  await note(run,{status:'GENERATING',waitingForVideoId:null,error:null},'Making a new video anyway (asked by you), without waiting for the previous one.');
+  await startGeneration(run,series);
+  return {ok:true,runId:String(run._id)};
 }
 
 export async function createRun(series,slotAt,{manual=false}={}){
@@ -97,16 +155,24 @@ export async function tick(now=new Date()){
       const ytReady=yt.configured&&yt.connected&&yt.publishEnabled;
       for(const slot of dueSlots(settings,now)){
         if(!ytReady){await skipSlot(series,slot,`Skipped: YouTube is not ready for this profile (${yt.problems.join(' ')})`).catch(()=>{});continue;}
-        await createRun(series,slot).catch(e=>console.error('Autopilot create failed:',e.message));
+        try{
+          if(await AutopilotRun.exists({seriesId:series._id,slotAt:slot}))continue;
+          if(settings.waitForPublish){
+            const blocker=await blockerFor(series._id);
+            if(blocker){await createWaitingRun(series,slot,blocker);continue;}
+          }
+          await createRun(series,slot);
+        }catch(e){console.error('Autopilot create failed:',e.message);}
       }
     }
-    const runs=await AutopilotRun.find({status:{$in:['GENERATING','APPROVED']},$or:[{nextActionAt:null},{nextActionAt:{$lte:now}}]}).lean();
+    const runs=await AutopilotRun.find({status:{$in:['WAITING','GENERATING','APPROVED']},$or:[{nextActionAt:null},{nextActionAt:{$lte:now}}]}).lean();
     for(const run of runs){
       try{
         const series=await Series.findById(run.seriesId).select('name autopilot uploadSettings archived').lean();
         if(!series||series.archived){await note(run,{status:'SKIPPED',error:'Profile was deleted.'},'Profile was deleted.');continue;}
         const settings=settingsFor(series);
-        if(run.status==='GENERATING')await advanceGenerating(run,series,settings);
+        if(run.status==='WAITING')await advanceWaiting(run,series,settings,now);
+        else if(run.status==='GENERATING')await advanceGenerating(run,series,settings);
         else if(run.status==='APPROVED')await advanceApproved(run,series,settings);
       }catch(e){console.error(`Autopilot run ${run._id} failed:`,e.message);await note(run,{error:e.message},`Error: ${e.message}`).catch(()=>{});}
     }

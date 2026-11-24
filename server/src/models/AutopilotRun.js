@@ -3,10 +3,12 @@ import mongoose from 'mongoose';
 const schema=new mongoose.Schema({
   seriesId:{type:mongoose.Schema.Types.ObjectId,ref:'Series',required:true},
   slotAt:{type:Date,required:true},
-  status:{type:String,enum:['GENERATING','APPROVED','SCHEDULED','PUBLISHED','NEEDS_ATTENTION','FAILED','SKIPPED'],default:'GENERATING'},
+  status:{type:String,enum:['WAITING','GENERATING','APPROVED','SCHEDULED','PUBLISHED','NEEDS_ATTENTION','FAILED','SKIPPED'],default:'GENERATING'},
   manual:{type:Boolean,default:false},
   jobId:{type:mongoose.Schema.Types.ObjectId,ref:'GenerationJob'},
   videoId:{type:mongoose.Schema.Types.ObjectId,ref:'Video'},
+  // WAITING: the earlier, not yet published video this slot is waiting for.
+  waitingForVideoId:{type:mongoose.Schema.Types.ObjectId,ref:'Video',default:null},
   attempts:{type:Number,default:1},
   uploadAttempts:{type:Number,default:0},
   nextActionAt:{type:Date,default:null},

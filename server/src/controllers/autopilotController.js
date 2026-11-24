@@ -1,7 +1,7 @@
 import Series from '../models/Series.js';
 import AutopilotRun from '../models/AutopilotRun.js';
 import {normalizeAutopilot,nextSlots} from '../services/autopilot/autopilotRules.js';
-import {createRun} from '../services/autopilot/autopilotRunner.js';
+import {createRun,generateAnyway} from '../services/autopilot/autopilotRunner.js';
 import {readiness} from '../services/youtube/youtubeAccount.js';
 
 async function load(id){const s=/^[a-f0-9]{24}$/i.test(String(id))?await Series.findById(id).lean():null;return s&&!s.archived?s:null;}
@@ -21,3 +21,15 @@ export async function runNow(req,res,next){try{
   if(!run)return res.status(409).json({error:'A run was just created; try again in a minute.'});
   res.status(202).json({ok:true,runId:run._id});
 }catch(e){next(e);}}
+
+// One run (used by the Telegram bot to check which profile it belongs to).
+export async function getRun(req,res,next){try{
+  const run=/^[a-f0-9]{24}$/i.test(String(req.params.runId))?await AutopilotRun.findById(req.params.runId).select('seriesId slotAt status waitingForVideoId videoId error').lean():null;
+  if(!run)return res.status(404).json({error:'Autopilot slot not found.'});
+  res.json(run);
+}catch(e){next(e);}}
+// "Make a new video anyway" for a slot that is waiting for the previous video.
+export async function makeAnyway(req,res){try{
+  if(!/^[a-f0-9]{24}$/i.test(String(req.params.runId)))return res.status(404).json({error:'Autopilot slot not found.'});
+  res.status(202).json(await generateAnyway(req.params.runId));
+}catch(e){res.status(e.status||500).json({error:e.message});}}

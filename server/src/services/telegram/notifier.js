@@ -149,7 +149,8 @@ async function deliver(event,payload){
   let attach=null;
   if(event==='ready'&&tg.sendVideoOnReady!==false&&c.renderPath){try{const st=await fs.stat(path.resolve(c.renderPath));if(st.size<=MAX_VIDEO_BYTES)attach=path.resolve(c.renderPath);}catch{}}
   // With bot commands on, "ready" comes with buttons to approve or open the video.
-  const buttons=event==='ready'&&tg.commandsEnabled&&c.videoId?{reply_markup:{inline_keyboard:[[{text:'✅ Approve',callback_data:`p:${c.videoId}`},{text:'🎞 Scenes / options',callback_data:`o:${c.videoId}`}]]}}:{};
+  const buttons=event==='ready'&&tg.commandsEnabled&&c.videoId?{reply_markup:{inline_keyboard:[[{text:'✅ Approve',callback_data:`p:${c.videoId}`},{text:'🎞 Scenes / options',callback_data:`o:${c.videoId}`}]]}}
+    :tg.commandsEnabled&&Array.isArray(payload.buttons)&&payload.buttons.length?{reply_markup:{inline_keyboard:payload.buttons}}:{};
   for(const chat of tg.chats){
     try{
       if(attach){try{await sendVideo(t,chat.chatId,attach,text,undefined,buttons);continue;}catch(e){errors.push(`video to ${chat.chatId}: ${e.message}`);}}

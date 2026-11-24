@@ -237,6 +237,16 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
       if(v.status!=='AWAITING_APPROVAL')return tg.send(chatId,`<b>${esc(v.title)}</b> is ${esc(String(v.status).toLowerCase().replace(/_/g,' '))} — nothing to approve.`,{inline_keyboard:[[{text:'Open video',callback_data:`o:${key}`}]]});
       return tg.send(chatId,await confirmText('approve',v),{inline_keyboard:[[{text:'✅ Yes, approve',callback_data:`a:${nonce({action:'approve',videoId:key,confirmed:true})}`},{text:'Open video',callback_data:`o:${key}`}]]});
     }
+    // "🆕 Make a new video anyway" on an Autopilot "waiting" message: confirm first.
+    if(kind==='w'||kind==='W'){
+      await tg.answer(cb.id,'');
+      let run;try{run=await api('GET',`/autopilot/runs/${key}`);}catch(e){return tg.send(chatId,`Could not open that slot: ${esc(e.message)}`);}
+      if(!scope(chatId).some(p=>p.id===String(run.seriesId)))return tg.send(chatId,'This chat does not control that profile.');
+      if(run.status!=='WAITING')return tg.send(chatId,`That slot is already ${esc(String(run.status).toLowerCase().replace(/_/g,' '))}.`);
+      if(kind==='w')return tg.send(chatId,'Make a new video for this slot now, even though the previous one is not published yet?',{inline_keyboard:[[{text:'🆕 Yes, make it',callback_data:`W:${key}`}]]});
+      try{await api('POST',`/autopilot/runs/${key}/generate`);return tg.send(chatId,'🎬 Making the new video. You will get a message when it is ready.');}
+      catch(e){return tg.send(chatId,`Could not start it: ${esc(e.message)}`);}
+    }
     // Sent with the "scene rebuilt" message (stateless; ownership is checked).
     if(kind==='r'){await tg.answer(cb.id,'Rendering…');return confirmRenderNow(chatId,key);}
     if(kind==='e'){const [videoId,n]=key.split(':');await tg.answer(cb.id,'');const {v}=await loadVideo(chatId,videoId);return showScene(chatId,v,Number(n));}
