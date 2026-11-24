@@ -15,6 +15,7 @@ import {generateImage,generateSpeech,currentSpeechVoice,lastImageProvider} from 
 import {speechSignature,readNarrationNote,writeNarrationNote,canReuseNarration,reuseProblem} from '../services/media/narrationReuse.js';
 import {generateMockImage,generateMockSpeech} from '../services/media/mockMedia.js';
 import {renderVideo,getAudioDuration} from '../services/video/renderer.js';
+import {narrationLooksCut,minSpeechSeconds} from '../utils/audioTiming.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
 import {makeSrt} from '../utils/srt.js';
 import {applyOpeningHook} from '../utils/openingRetention.js';
@@ -505,10 +506,21 @@ async function processJob(job){
         // Reuse saved narration only when the same voice made it from the same words,
         // so every scene of a video has one voice.
         if(ready){const note=await readNarrationNote(sceneAudio);if(!canReuseNarration(note,{signature,text})){remade.push(`${i+1} (${reuseProblem(note,{signature,text})})`);ready=false;}}
+        // Saved audio that stops part-way (from an older run) is remade too.
+        if(ready&&!mediaSettings.mockMode&&narrationLooksCut(text,await getAudioDuration(sceneAudio).catch(()=>0))){remade.push(`${i+1} (saved audio was cut short)`);ready=false;}
         if(!ready){
-          await fs.rm(sceneAudio,{force:true}).catch(()=>{});
-          if(mediaSettings.mockMode) await generateMockSpeech(text,sceneAudio);
-          else await generateSpeech(text,sceneAudio,speechLanguage,channelProfile?.narration||{});
+          // A provider sometimes returns audio that stops mid-sentence. Check the length
+          // against the words, try again, and if it keeps happening use the next provider.
+          for(let tries=1;;tries++){
+            await fs.rm(sceneAudio,{force:true}).catch(()=>{});
+            if(mediaSettings.mockMode){await generateMockSpeech(text,sceneAudio);break;}
+            await generateSpeech(text,sceneAudio,speechLanguage,channelProfile?.narration||{});
+            const got=await getAudioDuration(sceneAudio);
+            if(!narrationLooksCut(text,got))break;
+            const short=`Scene ${i+1} narration from ${voiceProvider.name} stopped early (${got.toFixed(1)}s of audio for ${text.length} characters; at least ${minSpeechSeconds(text).toFixed(1)}s expected)`;
+            if(tries>=3){await fs.rm(sceneAudio,{force:true}).catch(()=>{});throw new Error(`${short} three times.`);}
+            await GenerationJob.findByIdAndUpdate(jobId,{$set:{lastHeartbeatAt:new Date()},$push:{logs:{at:new Date(),level:'warning',message:`${short}. Recording it again (try ${tries+1} of 3).`}}});
+          }
           await writeNarrationNote(sceneAudio,{signature,text,provider:speechVoice.provider,voice:speechVoice.voice}).catch(()=>{});
         }
         const duration=await getAudioDuration(sceneAudio);

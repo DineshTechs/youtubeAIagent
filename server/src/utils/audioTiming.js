@@ -21,3 +21,16 @@ export function parseAudibleDurationFromFfmpegOutput(output) {
     ? Number(audibleDuration.toFixed(3))
     : null;
 }
+
+// A TTS service sometimes returns audio that stops part-way through the text.
+// The fastest believable narration is about 25 characters a second (Hindi or
+// English), so audio much shorter than that cannot contain all the words.
+export const FASTEST_CHARS_PER_SEC = 25;
+export function minSpeechSeconds(text) {
+  const n = String(text || '').replace(/\s+/g, ' ').trim().length;
+  return n < 40 ? 0 : Number((n / FASTEST_CHARS_PER_SEC).toFixed(2));
+}
+export function narrationLooksCut(text, durationSec) {
+  const min = minSpeechSeconds(text);
+  return min > 0 && Number(durationSec) > 0 && Number(durationSec) < min;
+}

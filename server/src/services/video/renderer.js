@@ -5,8 +5,22 @@ import {spawn} from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import {env} from '../../config/env.js';
 import {parseAudibleDurationFromFfmpegOutput} from '../../utils/audioTiming.js';
+import {fileURLToPath} from 'node:url';
 
 const ffmpegPath = env.ffmpegPath || ffmpegStatic || 'ffmpeg';
+
+// Caption font shipped with the app (server/assets/fonts). Linux servers usually
+// have no Hindi font, so Devanagari captions showed as empty boxes; Windows-only
+// fonts such as Nirmala UI are swapped for this one there.
+export const BUNDLED_FONTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../assets/fonts');
+export const BUNDLED_CAPTION_FONT = 'Poppins Medium';
+const WINDOWS_ONLY_FONTS = /^(nirmala ui|nirmala text|mangal|aparajita|kokila|utsaah|arial|segoe ui|calibri|tahoma|verdana|times new roman)$/i;
+export function captionFont(name, platform = process.platform) {
+  const n = String(name || '').trim();
+  if (platform !== 'win32' && (!n || WINDOWS_ONLY_FONTS.test(n))) return BUNDLED_CAPTION_FONT;
+  return n || 'Nirmala UI';
+}
+const filterPath = p => path.resolve(p).replace(/\\/g,'/').replace(/^([A-Za-z]):/,'$1\\:').replace(/'/g,"\\'");
 
 function run(cmd,args,{shouldCancel=null}={}){
   return new Promise((resolve,reject)=>{
@@ -171,11 +185,12 @@ export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurat
   const renderVersion=`${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
   const videoPath=path.join(outDir,`final-${renderVersion}.mp4`);
   const canBurnSubtitles=Boolean(subtitlesEnabled!==false&&subtitlesFile&&isUsableFile(subtitlesFile));
-  const subtitleStyle=buildSubtitleStyle({width,height,fontSizePx:subtitleFontSize,fontName:subtitleFontName,position:subtitlePosition,offsetPct:subtitleOffsetPct});
+  const subtitleStyle=buildSubtitleStyle({width,height,fontSizePx:subtitleFontSize,fontName:captionFont(subtitleFontName),position:subtitlePosition,offsetPct:subtitleOffsetPct});
   if(canBurnSubtitles){
-    const subtitlePath=path.resolve(subtitlesFile).replace(/\\/g,'/').replace(/^([A-Za-z]):/,'$1\\:').replace(/'/g,"\\'");
+    const subtitlePath=filterPath(subtitlesFile);
     const style=subtitleStyle.forceStyle;
-    const filter=`subtitles='${subtitlePath}':force_style='${style}'`;
+    const fontsDir=existsSync(BUNDLED_FONTS_DIR)?`:fontsdir='${filterPath(BUNDLED_FONTS_DIR)}'`:'';
+    const filter=`subtitles='${subtitlePath}'${fontsDir}:force_style='${style}'`;
     await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-map','0:v:0','-map','1:a:0','-vf',filter,'-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-shortest','-movflags','+faststart',videoPath],{shouldCancel});
   }else{
     await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','128k','-shortest',videoPath],{shouldCancel});
