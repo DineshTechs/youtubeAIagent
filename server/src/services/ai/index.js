@@ -217,7 +217,8 @@ export async function getMediaSettings() {
     ttsProvider: media.ttsProvider || env.ttsProvider || 'groq',
     ttsModel: media.ttsModels?.[media.ttsProvider] || defaults().media.ttsModels[media.ttsProvider] || defaults().media.ttsModels.groq,
     ttsModels: media.ttsModels || defaults().media.ttsModels,
-    ttsVoice: media.ttsVoices?.[media.ttsProvider] || defaults().media.ttsVoices[media.ttsProvider] || defaults().media.ttsVoices.groq,
+    // An empty voice is allowed (AI Awaaz then uses its own default); never borrow another provider's voice.
+    ttsVoice: (p => media.ttsVoices?.[p] || (p in defaults().media.ttsVoices ? defaults().media.ttsVoices[p] : defaults().media.ttsVoices.groq) || '')(media.ttsProvider || env.ttsProvider || 'groq'),
     ttsVoices: media.ttsVoices || defaults().media.ttsVoices,
     generationEnabled: media.generationEnabled ?? env.mediaGenerationEnabled,
     mockMode: media.mockMode ?? env.mediaMock,
@@ -265,7 +266,7 @@ export async function updateAIConfig(patch = {}) {
   if (patch.media?.imageAspectRatio) allowed['media.imageAspectRatio']=String(patch.media.imageAspectRatio);
   if (patch.media?.imageQuality) allowed['media.imageQuality']=patch.media.imageQuality;
   if (patch.media?.ttsModels) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsModels[p]==='string' && patch.media.ttsModels[p].trim()) allowed[`media.ttsModels.${p}`]=patch.media.ttsModels[p].trim();
-  if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string' && patch.media.ttsVoices[p].trim()) allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim();
+  if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string') allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim(); // '' = provider default
   for (const k of ['generationEnabled','mockMode','pollinationsSafe']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
   if (patch.video) {
     for (const k of ['width','height','fps','imageFit']) if (patch.video[k] != null) allowed[`video.${k}`]=patch.video[k];

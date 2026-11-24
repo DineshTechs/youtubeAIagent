@@ -653,7 +653,7 @@ function App(){
  const ttsProvider=ttsEdit||ai?.media?.ttsProvider||'groq';
  const imageModel=ai?.media?.imageModels?.[imageProvider]||ai?.media?.imageModel||'';
  const ttsModel=ai?.media?.ttsModels?.[ttsProvider]||ai?.media?.ttsModel||'';
- const ttsVoice=ai?.media?.ttsVoices?.[ttsProvider]||ai?.media?.ttsVoice||'';
+ const ttsVoice=ai?.media?.ttsVoices&&ttsProvider in ai.media.ttsVoices?(ai.media.ttsVoices[ttsProvider]??''):(ai?.media?.ttsVoice||'');
  const imageSize=ai?.media?.imageSizes?.[imageProvider]||ai?.media?.imageSize||'';
  const imageSizeOptions={gemini:['1K','2K','4K'],openai:['1024x1024','1024x1536','1536x1024'],cloudflare:['1024x1024','1024x1536','1536x1024','1080x1920'],pollinations:['768x1344','1024x1792','1080x1920','1536x2048'],mock:['1080x1920']}[imageProvider]||['1080x1920'];
  const imageModelPresets={gemini:['gemini-nano-banana-2.1'],openai:['gpt-image-2'],cloudflare:['@cf/black-forest-labs/flux-1-schnell'],pollinations:['black-forest-labs/flux.1-schnell','google/gemini-nano-banana-2.1'],mock:['local']}[imageProvider]||[];
