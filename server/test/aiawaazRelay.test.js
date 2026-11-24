@@ -39,3 +39,17 @@ test('the relay Worker forwards only with the secret and only to aiawaaz.io', as
     assert.equal((await worker.fetch(new Request('https://r/x/api/mcp'), {})).status, 404); // no secret configured → closed
   } finally { globalThis.fetch = realFetch; }
 });
+
+import {mcpSynthesize, resetMcpSessions} from '../src/services/media/mcpTts.js';
+test('a rejected AI Awaaz voice says which voice and how to fix it', async () => {
+  resetMcpSessions?.();
+  const reply = (id, result) => new Response(JSON.stringify({jsonrpc: '2.0', id, result}), {status: 200, headers: {'content-type': 'application/json'}});
+  const fake = async (_u, init) => {
+    const b = JSON.parse(init.body);
+    if (b.method === 'initialize') return reply(b.id, {protocolVersion: '2025-06-18', capabilities: {}});
+    if (!b.id) return new Response('', {status: 202});
+    if (b.method === 'tools/list') return reply(b.id, {tools: [{name: 'generate_speech', description: 'text to speech', inputSchema: {type: 'object', properties: {text: {type: 'string'}, voice: {type: 'string'}}}}]});
+    return reply(b.id, {isError: true, content: [{type: 'text', text: 'The voice reference format is invalid.'}]});
+  };
+  await assert.rejects(mcpSynthesize({url: 'https://voice-test.aiawaaz.io/api/mcp', apiKey: 'k', voice: 'Priya', language: 'hi', text: 'नमस्ते', sleep: async () => {}, gapMs: 0}, fake), /The saved voice is "Priya"\. .*Connect & load voices/);
+});

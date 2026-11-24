@@ -202,7 +202,14 @@ export async function mcpSynthesize({url,apiKey,tool:preferredTool,voice,languag
     const parts=[];
     for(const piece of splitByChars(text)){
       const spoken=enhancer?await enhanceText(client,enhancer,piece):piece;
-      parts.push(await audioFromResult(await client.callTool(tool.name,buildTtsArgs(tool,{text:spoken,voice,language})),fetchImpl,{mcpUrl:url}));
+      let result;
+      try{result=await client.callTool(tool.name,buildTtsArgs(tool,{text:spoken,voice,language}));}
+      catch(e){
+        // A voice copied from another computer or typed by hand is often not a valid AI Awaaz voice id.
+        if(/voice/i.test(String(e?.message||'')))throw new McpError(`${e.message} The saved voice is ${voice?`"${voice}"`:'empty'}. In Settings → AI providers → Narration → AI Awaaz, click "Connect & load voices", pick a voice from the list and save.`,e.status);
+        throw e;
+      }
+      parts.push(await audioFromResult(result,fetchImpl,{mcpUrl:url}));
     }
     if(!parts.length)throw new McpError('nothing to speak.');
     return Buffer.concat(parts);
