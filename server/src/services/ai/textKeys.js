@@ -87,6 +87,9 @@ export function cleanKey(key) {
   if (/\s/.test(k) || k.length < 8) throw Object.assign(new Error('That does not look like an API key (too short or has spaces).'), {status: 400});
   return k.slice(0, 500);
 }
+// Cloudflare's Global API Key (37 hex characters) does not work here: it needs an API token.
+export const isCloudflareGlobalKey = k => /^[a-f0-9]{37}$/i.test(String(k || ''));
+export const GLOBAL_KEY_ERROR = 'This is the Cloudflare Global API Key (37 characters), not an API token. In Cloudflare go to My Profile → API Tokens → Create Token → "Workers AI" template, and paste the token it shows (about 40 characters).';
 // Builds the $set/$unset for saving. Blank key keeps the saved one; clear:true removes it.
 export function textKeyUpdate(provider, {key, clear, accountId, baseUrl} = {}) {
   const c = TEXT_CATALOG[provider];
@@ -95,7 +98,9 @@ export function textKeyUpdate(provider, {key, clear, accountId, baseUrl} = {}) {
   const base = `secrets.textKeys.${provider}`;
   if (clear) unset[`${base}.key`] = 1;
   else if (typeof key === 'string' && key.trim()) {
-    set[`${base}.key`] = encryptSecret(cleanKey(key));
+    const k = cleanKey(key);
+    if (provider === 'cloudflare' && isCloudflareGlobalKey(k)) throw Object.assign(new Error(GLOBAL_KEY_ERROR), {status: 400});
+    set[`${base}.key`] = encryptSecret(k);
   }
   if (c.needsAccountId && typeof accountId === 'string') {
     const a = accountId.trim();

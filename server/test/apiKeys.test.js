@@ -71,3 +71,11 @@ test('Cloudflare check tells a bad token from a wrong account / missing permissi
   await assert.rejects(checkCloudflare({token: 't'.repeat(20), accountId: 'short'}), /32 letters/);
   await assert.rejects(checkCloudflare({token: 'x'.repeat(37), accountId: acct}, async () => reply(400, {success: false, errors: [{code: 9106, message: 'Authentication failed (status: 400)'}]})), /could not read this token \(token checked: …xxxx, 37 characters\)/);
 });
+
+test('the Cloudflare Global API Key is refused with a clear message', async () => {
+  const globalKey = 'a1b2c3d4e5'.repeat(3) + '1234d7e';
+  assert.equal(globalKey.length, 37);
+  assert.throws(() => textKeyUpdate('cloudflare', {key: globalKey}), /Global API Key/);
+  assert.ok(textKeyUpdate('cloudflare', {key: 'Ab3_' + 'x'.repeat(36)}).set);
+  await assert.rejects(checkCloudflare({token: globalKey, accountId: 'c'.repeat(32)}, async () => { throw new Error('should not call'); }), /Global API Key/);
+});

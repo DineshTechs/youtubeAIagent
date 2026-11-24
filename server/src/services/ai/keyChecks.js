@@ -4,6 +4,7 @@ const short = t => String(t || '').replace(/\s+/g, ' ').slice(0, 200);
 
 export async function checkCloudflare({token, accountId}, fetchImpl = fetch) {
   if (!token || !accountId) throw new Error('Cloudflare needs both the API token and the account ID.');
+  if (/^[a-f0-9]{37}$/i.test(token)) throw new Error('The Cloudflare value in use is the Global API Key (37 characters), not an API token. Create a token with the "Workers AI" template and paste it in Settings → AI providers → API keys.');
   if (!/^[a-f0-9]{32}$/i.test(accountId)) throw new Error('The Cloudflare account ID should be 32 letters/digits (Cloudflare dashboard → Workers AI → "Use REST API").');
   const h = {Authorization: `Bearer ${token}`};
   const get = async url => { const r = await fetchImpl(url, {headers: h, signal: AbortSignal.timeout(15000)}); return {r, j: await r.json().catch(() => ({}))}; };

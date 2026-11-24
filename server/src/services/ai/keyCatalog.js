@@ -1,7 +1,7 @@
 // One list of every API key the app uses, for Settings → AI providers → API keys.
 // Pure (no database): the caller passes the AISettings document. Keys are never
 // returned, only whether one is set, where it comes from and its last 4 characters.
-import {TEXT_CATALOG, textCredentialsFrom, textConfigured, pollinationsKeyFrom, cleanKey} from './textKeys.js';
+import {TEXT_CATALOG, textCredentialsFrom, textConfigured, pollinationsKeyFrom, cleanKey, isCloudflareGlobalKey} from './textKeys.js';
 import {decryptSecret, encryptSecret} from '../secretBox.js';
 
 const envValue = name => String(process.env[name] || '').trim();
@@ -25,10 +25,11 @@ export function keyList(settings) {
   for (const [id, c] of Object.entries(TEXT_CATALOG)) {
     const cr = creds[id];
     const fields = [];
-    if (!c.keyOptional) fields.push({name: 'key', label: id === 'cloudflare' ? 'API token' : id === 'github' ? 'Access token' : 'API key', secret: true});
-    if (c.needsAccountId) fields.push({name: 'accountId', label: 'Account ID', value: cr.accountId, fromEnv: cr.accountFromEnv, placeholder: '32 letters/digits'});
+    if (!c.keyOptional) fields.push({name: 'key', label: id === 'cloudflare' ? 'API token (not the Global API Key)' : id === 'github' ? 'Access token' : 'API key', secret: true});
+    if (c.needsAccountId) fields.push({name: 'accountId', label: 'Account ID', hint: 'Cloudflare dashboard → Workers AI → "Use REST API"', value: cr.accountId, fromEnv: cr.accountFromEnv, placeholder: '32 letters/digits'});
     if (c.customBaseUrl) fields.push({name: 'baseUrl', label: 'Address', value: cr.addressSet ? cr.baseUrl : '', placeholder: c.baseUrl});
-    list.push({id, kind: 'text', name: c.name, usedFor: USED_FOR[id] || ['Scripts'], keyUrl: c.keyUrl || '', free: c.free, fields,
+    const warning = id === 'cloudflare' && isCloudflareGlobalKey(cr.key) ? `The ${cr.saved ? 'saved' : '.env'} value is the Global API Key, which Workers AI rejects. Replace it with an API token (Create Token → "Workers AI" template).` : '';
+    list.push({id, kind: 'text', name: c.name, warning, usedFor: USED_FOR[id] || ['Scripts'], keyUrl: c.keyUrl || '', free: c.free, fields,
       hasKey: Boolean(cr.key), source: sourceOf(cr), hint: hint(cr.key), unreadable: cr.unreadable && !cr.key, unreadableOverridden: cr.unreadable && Boolean(cr.key), configured: textConfigured(id, cr), keyOptional: Boolean(c.keyOptional)});
   }
   const pk = pollinationsKeyFrom(settings);
