@@ -20,6 +20,23 @@ for (const envPath of [...new Set(envCandidates)]) {
   dotenv.config({ path: envPath, override: false });
 }
 
+// Values pasted into a hosting panel often keep quotes, spaces or a line break
+// (e.g. GEMINI_API_KEY="AIza…"), and every provider then answers 401 "API key not
+// valid". Clean the app's own variables once at start-up and say which were fixed.
+const APP_VARS = /^(GEMINI|OPENAI|GROQ|CEREBRAS|CLOUDFLARE|POLLINATIONS|YOUTUBE|TELEGRAM|AZURE|GOOGLE|ELEVENLABS|AIAWAAZ|OPENROUTER|MISTRAL|GITHUB|SAMBANOVA|NVIDIA|COHERE|OLLAMA|MONGODB|APP_SECRET|ADMIN|PUBLIC_URL|ALLOWED_ORIGINS|NODE_ENV|PORT|SESSION|TEXT_|IMAGE_|TTS_|MEDIA_)/;
+export function cleanEnvValue(value) {
+  let v = String(value ?? '').replace(/^\uFEFF/, '').trim();
+  while (v.length >= 2 && ((v[0] === '"' && v.at(-1) === '"') || (v[0] === "'" && v.at(-1) === "'") || (v[0] === '`' && v.at(-1) === '`'))) v = v.slice(1, -1).trim();
+  return v;
+}
+const cleanedVars = [];
+for (const name of Object.keys(process.env)) {
+  if (!APP_VARS.test(name)) continue;
+  const cleaned = cleanEnvValue(process.env[name]);
+  if (cleaned !== process.env[name]) { process.env[name] = cleaned; cleanedVars.push(name); }
+}
+if (cleanedVars.length) console.warn(`[config] Removed quotes/spaces around: ${cleanedVars.join(', ')}. Enter values without quotes in the hosting panel.`);
+
 // Cloudflare naming compatibility:
 // - CLOUDFLARE_API_TOKEN is the preferred name.
 // - CLOUDFLARE_WORKERS_AI_API_TOKEN is supported for older configs.
