@@ -362,7 +362,7 @@ export async function testProvider(name) {
     try { return await provider.testConnection(); }
     catch (e) {
       // Cloudflare's "Authentication error" doesn't say whether the token or the account ID is wrong.
-      if (name === 'cloudflare' && /\b(401|403)\b/.test(String(e.message))) { const c = textCredentialsFrom(settings).cloudflare; await checkCloudflare({ token: c.key, accountId: c.accountId }); }
+      if (name === 'cloudflare' && /\b(400|401|403)\b/.test(String(e.message))) { const c = textCredentialsFrom(settings).cloudflare; await checkCloudflare({ token: c.key, accountId: c.accountId }); }
       throw e;
     }
   }

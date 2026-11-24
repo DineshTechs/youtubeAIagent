@@ -43,6 +43,7 @@ test('a key saved with a different secret key is reported as unreadable', () => 
 test('pasted keys lose quotes, Bearer and spaces', () => {
   assert.equal(cleanKey('  "Bearer abcdefgh12345"  '), 'abcdefgh12345');
   assert.equal(cleanKey("'abcdefgh12345'"), 'abcdefgh12345');
+  assert.equal(cleanKey('\u200babcdefgh12345\ufeff\n'), 'abcdefgh12345');
   assert.throws(() => cleanKey('abc def ghi jkl'));
 });
 
@@ -68,4 +69,5 @@ test('Cloudflare check tells a bad token from a wrong account / missing permissi
   await assert.rejects(checkCloudflare({token: 'x'.repeat(20), accountId: acct}, async url => url.includes('tokens/verify') ? reply(200, {success: true, result: {status: 'active'}}) : reply(401, {success: false})), /valid but cannot use Workers AI/);
   assert.equal((await checkCloudflare({token: 'x'.repeat(20), accountId: acct}, async () => reply(200, {success: true, result: []}))).ok, true);
   await assert.rejects(checkCloudflare({token: 't'.repeat(20), accountId: 'short'}), /32 letters/);
+  await assert.rejects(checkCloudflare({token: 'x'.repeat(37), accountId: acct}, async () => reply(400, {success: false, errors: [{code: 9106, message: 'Authentication failed (status: 400)'}]})), /could not read this token \(token checked: …xxxx, 37 characters\)/);
 });

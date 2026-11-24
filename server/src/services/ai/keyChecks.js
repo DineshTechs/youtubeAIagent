@@ -10,13 +10,17 @@ export async function checkCloudflare({token, accountId}, fetchImpl = fetch) {
   // Can it use Workers AI on this account?
   const {r, j} = await get(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/models/search?per_page=1`);
   if (r.ok && j.success !== false) return {ok: true, message: 'Cloudflare token and account ID work for Workers AI.'};
-  if (r.status !== 401 && r.status !== 403) throw new Error(`Cloudflare check failed (${r.status}): ${short(JSON.stringify(j.errors || j))}`);
+  const which = `(token checked: …${token.slice(-4)}, ${token.length} characters)`;
+  // 400 with 9106/6003/6111 = Cloudflare could not even read the token: it isn't an API token.
+  if (r.status === 400 && (j.errors || []).some(e => [9106, 6003, 6111].includes(e.code) || /authentication|authorization/i.test(e.message || '')))
+    throw new Error(`Cloudflare could not read this token ${which}. It is probably not an API token: the "Global API Key", the token's ID or name, or a copy with hidden characters. A real API token is shown only once, right after you create it (about 40 letters/digits). Make a new one with the "Workers AI" template and paste it here.`);
+  if (r.status !== 401 && r.status !== 403) throw new Error(`Cloudflare check failed (${r.status}) ${which}: ${short(JSON.stringify(j.errors || j))}`);
   // Find out why: is the token valid at all (user token, then account token)?
   const user = await get('https://api.cloudflare.com/client/v4/user/tokens/verify');
   const acct = user.r.ok ? user : await get(`https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/tokens/verify`);
   if (acct.r.ok && acct.j.success !== false && acct.j.result?.status !== 'disabled')
     throw new Error(`The token is valid but cannot use Workers AI on account ${accountId.slice(0, 6)}… (${r.status}). Either the account ID is from a different Cloudflare account, or the token lacks the "Workers AI" permission. Check both, then save again.`);
-  throw new Error(`Cloudflare rejected the API token (${r.status} "Authentication error"): it is wrong, expired, or was copied with extra characters. Make a new one at dash.cloudflare.com → My Profile → API Tokens → Create Token → "Workers AI" template, then paste it in Settings → AI providers → API keys.`);
+  throw new Error(`Cloudflare rejected the API token ${which} (${r.status} "Authentication error"): it is wrong, expired, or was copied with extra characters. Make a new one at dash.cloudflare.com → My Profile → API Tokens → Create Token → "Workers AI" template, then paste it in Settings → AI providers → API keys.`);
 }
 
 export async function checkGemini(key, fetchImpl = fetch) {

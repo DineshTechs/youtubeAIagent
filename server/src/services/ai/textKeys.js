@@ -82,7 +82,8 @@ export function applyTextKeysToEnv(settings) {
 }
 // Trims quotes, "Bearer " and spaces that come with copy-paste; rejects obvious non-keys.
 export function cleanKey(key) {
-  const k = String(key || '').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/^Bearer\s+/i, '').trim();
+  // Zero-width spaces, BOMs and other invisible characters sneak in when copying from web pages.
+  const k = String(key || '').replace(/[\u0000-\u001f\u007f-\u00a0\u00ad\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff]/g, ' ').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/^Bearer\s+/i, '').trim();
   if (/\s/.test(k) || k.length < 8) throw Object.assign(new Error('That does not look like an API key (too short or has spaces).'), {status: 400});
   return k.slice(0, 500);
 }
