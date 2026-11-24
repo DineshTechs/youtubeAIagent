@@ -3,6 +3,7 @@
 // tools: generate_speech → MP3 link (≤5,000 characters per call), list_voices, enhance_for_v3, get_account)
 // The server's tools are discovered with tools/list; the text-to-speech tool and its
 // argument names (text / voice / language …) are detected from the tool schemas.
+import {describeNetworkError,isRetryableNetworkError} from '../../utils/networkError.js';
 export const DEFAULT_MCP_TTS_URL='https://app.aiawaaz.io/api/mcp';
 export const MAX_CHARS_PER_CALL=4800; // AI Awaaz: up to 5,000 characters per generate_speech call
 
@@ -49,7 +50,11 @@ export function createMcpClient({url=DEFAULT_MCP_TTS_URL,apiKey,maxRetries=3,sle
     for(let attempt=0;;attempt++){
       if(sessionId)headers['Mcp-Session-Id']=sessionId;
       onRequest?.(body.method);
-      let r;try{r=await fetchImpl(url,{method:'POST',headers,body:JSON.stringify(body)});}catch(e){throw new McpError(`cannot reach ${url}: ${e.message}`);}
+      let r;try{r=await fetchImpl(url,{method:'POST',headers,body:JSON.stringify(body)});}catch(e){
+        // Retry short network hiccups; otherwise say what actually went wrong (DNS, firewall, certificate…).
+        if(isRetryableNetworkError(e)&&attempt<Math.min(maxRetries,2)){await sleep(retryDelayMs(null,attempt));continue;}
+        throw new McpError(describeNetworkError(e,url));
+      }
       const sid=r.headers?.get?.('mcp-session-id');if(sid)sessionId=sid;
       if(r.status===429||r.status===503){
         const retryAfter=r.headers?.get?.('retry-after');
