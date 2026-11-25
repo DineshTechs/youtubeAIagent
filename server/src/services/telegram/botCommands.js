@@ -17,7 +17,8 @@ export function missingFileMessage(file,platform=process.platform){
     : 'The video file is missing on this computer (it may have been cleaned up). Re-render the video in the dashboard to make it again.';
 }
 const ACTIVE=new Set(['QUEUED','RUNNING']);
-const CONFIRM={approve:true,delete:true,upload:true,schedule:true,regen:true,rebuild:true};
+const SKIPPABLE=new Set(['SCENE_REVIEW','AWAITING_APPROVAL','APPROVED']);
+const CONFIRM={skip:true,approve:true,delete:true,upload:true,schedule:true,regen:true,rebuild:true};
 const EDITABLE=new Set(['AWAITING_APPROVAL','APPROVED','FAILED','CANCELLED','SCENE_REVIEW']);
 const INPUT_TTL=15*60*1000;
 const NONCE_TTL=10*60*1000;
@@ -64,6 +65,7 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
     if(v.renderPath)rows.push([b('▶ Send video','send')]);
     if(v.status==='SCENE_REVIEW'){const n=v.pendingSceneEdit?.sceneNumber;rows.push([{text:'✅ Render video',callback_data:`r:${id}`},...(n?[{text:`👁 See new scene ${n}`,callback_data:`e:${id}:${n}`}]:[])]);}
     if(v.status==='AWAITING_APPROVAL')rows.push([b('✅ Approve','approve')]);
+    if(SKIPPABLE.has(v.status))rows.push([v.skippedAt?b('↩ Undo skip','unskip'):b('⏭ Skip (don’t wait for it)','skip')]);
     if(['APPROVED','UPLOADING'].includes(v.status))rows.push([b('📺 Upload now','upload'),...(profile?.scheduleTime?[b(`🗓 Schedule ${profile.scheduleTime}`,'schedule')]:[])]);
     if(['FAILED','CANCELLED'].includes(v.status)&&!active)rows.push([b('🔁 Continue','retry')]);
     if(EDITABLE.has(v.status)&&!active&&(v.storyId?.scenes?.length||v.sceneCount))rows.push([b('🎞 Scenes','scenes'),b('🖼 Rebuild all images','rebuild')]);
@@ -96,6 +98,7 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
     return tg.send(chatId,`🎬 Creating a video for <b>${esc(profile.name)}</b>${topic?` about “${esc(short(topic,200))}”`:' (topic chosen from the profile)'}.\n${j.profile?`${esc(j.profile.language)} · ${esc(j.profile.format)} · ${j.profile.durationSec}s`:''}\nUse /status to follow it.`);
   }
   async function confirmText(action,v,sceneNumber){
+    if(action==='skip')return `Skip <b>${esc(v.title)}</b>?\nIt stays as it is (you can still open, fix or approve it later), but Autopilot no longer waits for it and makes the next video at the next time.`;
     if(action==='approve')return `Approve <b>${esc(v.title)}</b>?\nThis confirms you watched it: the images match the narration, subtitles are readable and it suits the audience.`;
     if(action==='rebuild')return `Rebuild <b>all ${(v.storyId?.scenes||[]).length} images</b> of <b>${esc(v.title)}</b> from the narration?\nEvery scene is re-planned and gets a new image. I'll send them all here to check before the video is rendered.${reapproveNote(v)}`;
     if(action==='regen')return `Make a new image for <b>scene ${sceneNumber}</b> of <b>${esc(v.title)}</b> and re-render the video?${reapproveNote(v)}`;
@@ -183,6 +186,8 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
       }
       case 'applyEdit':return applyEdit(chatId,messageId,{videoId,sceneNumber,body});
       case 'cancel':await api('POST',`/videos/${videoId}/cancel`);break;
+      case 'skip':await api('POST',`/videos/${videoId}/skip`);await tg.send(chatId,`⏭ Skipped <b>${esc(v.title)}</b>. Autopilot will make the next video at the next time.`);break;
+      case 'unskip':await api('POST',`/videos/${videoId}/unskip`);await tg.send(chatId,`↩ <b>${esc(v.title)}</b> is no longer skipped; Autopilot waits for it again.`);break;
       default:return tg.send(chatId,'Unknown action.');
     }
     return showCard(chatId,videoId,messageId);
@@ -246,6 +251,21 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
       if(v.status!=='AWAITING_APPROVAL')return tg.send(chatId,`<b>${esc(v.title)}</b> is ${esc(String(v.status).toLowerCase().replace(/_/g,' '))} — nothing to approve.`,{inline_keyboard:[[{text:'Open video',callback_data:`o:${key}`}]]});
       return tg.send(chatId,await confirmText('approve',v),{inline_keyboard:[[{text:'✅ Yes, approve',callback_data:`a:${nonce({action:'approve',videoId:key,confirmed:true})}`},{text:'Open video',callback_data:`o:${key}`}]]});
     }
+    // "🗑 Delete" on Autopilot messages (stateless): confirm first, never while it is being made.
+    if(kind==='d'){
+      await tg.answer(cb.id,'');
+      let v;try{({v}=await loadVideo(chatId,key));}catch(e){return tg.send(chatId,esc(e.message));}
+      if(v.latestJob&&ACTIVE.has(v.latestJob.status))return tg.send(chatId,`<b>${esc(v.title)}</b> is still being made. Cancel it first, then delete it.`,{inline_keyboard:[[{text:'Open video',callback_data:`o:${key}`}]]});
+      return tg.send(chatId,await confirmText('delete',v),{inline_keyboard:[[{text:'🗑 Yes, delete',callback_data:`a:${nonce({action:'delete',videoId:key,confirmed:true})}`},{text:'Open video',callback_data:`o:${key}`}]]});
+    }
+    // "⏭ Skip this video" on Autopilot messages (stateless): confirm first.
+    if(kind==='s'){
+      await tg.answer(cb.id,'');
+      let v;try{({v}=await loadVideo(chatId,key));}catch(e){return tg.send(chatId,esc(e.message));}
+      if(!SKIPPABLE.has(v.status))return tg.send(chatId,`<b>${esc(v.title)}</b> is ${esc(String(v.status).toLowerCase().replace(/_/g,' '))} — nothing to skip.`);
+      if(v.skippedAt)return tg.send(chatId,`<b>${esc(v.title)}</b> is already skipped.`);
+      return tg.send(chatId,await confirmText('skip',v),{inline_keyboard:[[{text:'⏭ Yes, skip it',callback_data:`a:${nonce({action:'skip',videoId:key,confirmed:true})}`},{text:'Open video',callback_data:`o:${key}`}]]});
+    }
     // "🆕 Make a new video anyway" on an Autopilot "waiting" message: confirm first.
     if(kind==='w'||kind==='W'){
       await tg.answer(cb.id,'');
@@ -282,7 +302,7 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
       if(CONFIRM[entry.action]&&!entry.confirmed){
         const {v}=await loadVideo(chatId,entry.videoId);
         await tg.answer(cb.id,'');
-        const yes={delete:'🗑 Yes, delete',approve:'✅ Yes, approve',regen:'🔄 Yes, new image',rebuild:'🖼 Yes, rebuild all'}[entry.action]||'📺 Yes, upload';
+        const yes={skip:'⏭ Yes, skip it',delete:'🗑 Yes, delete',approve:'✅ Yes, approve',regen:'🔄 Yes, new image',rebuild:'🖼 Yes, rebuild all'}[entry.action]||'📺 Yes, upload';
         const confirmMsg=await confirmText(entry.action,v,entry.sceneNumber);
         if(entry.action==='regen')return tg.send(chatId,confirmMsg,{inline_keyboard:[[{text:yes,callback_data:`a:${nonce({...entry,confirmed:true})}`},{text:'Cancel',callback_data:`a:${nonce({action:'scene',videoId:entry.videoId,sceneNumber:entry.sceneNumber})}`}]]});
         return tg.edit(chatId,messageId,confirmMsg,{inline_keyboard:[[{text:yes,callback_data:`a:${nonce({...entry,confirmed:true})}`},{text:'Back',callback_data:`a:${nonce({action:'open',videoId:entry.videoId})}`}]]});

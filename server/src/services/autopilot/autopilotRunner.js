@@ -5,7 +5,7 @@ import Series from '../../models/Series.js';
 import Video from '../../models/Video.js';
 import GenerationJob from '../../models/GenerationJob.js';
 import AutopilotRun from '../../models/AutopilotRun.js';
-import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,heldMessage,UNPUBLISHED_STATUSES} from './autopilotRules.js';
+import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,heldMessage,UNPUBLISHED_STATUSES,SKIPPABLE_STATUSES} from './autopilotRules.js';
 import {internalApi} from '../telegram/botRunner.js';
 import {notify} from '../telegram/notifier.js';
 import {readiness} from '../youtube/youtubeAccount.js';
@@ -22,7 +22,7 @@ async function problem(run,series,status,message,{held=false}={}){
   await note(run,{status,error:message,nextActionAt:null},message);
   const videoId=run.videoId?String(run.videoId):undefined;
   // Held for review: buttons to approve or open it straight from the message.
-  const buttons=held&&videoId?[[{text:'✅ Approve',callback_data:`p:${videoId}`},{text:'🎞 Open video',callback_data:`o:${videoId}`}]]:videoId?[[{text:'🎞 Open video',callback_data:`o:${videoId}`}]]:undefined;
+  const buttons=held&&videoId?[[{text:'✅ Approve',callback_data:`p:${videoId}`},{text:'🎞 Open video',callback_data:`o:${videoId}`}],[{text:'⏭ Skip this video',callback_data:`s:${videoId}`},{text:'🗑 Delete',callback_data:`d:${videoId}`}]]:videoId?[[{text:'🎞 Open video',callback_data:`o:${videoId}`}]]:undefined;
   notify('autopilot',{profileId:String(series._id),profileName:series.name,videoId,title:held?`Autopilot: video held for review (${slotLabel(run.slotAt,series.uploadSettings?.timezone)})`:`Autopilot: slot ${slotLabel(run.slotAt,series.uploadSettings?.timezone)}`,message,buttons});
 }
 
@@ -40,7 +40,7 @@ async function skipSlot(series,slotAt,message){
 // ---- Waiting for the previous video to be published ----
 async function blockerFor(seriesId,{excludeRunId}={}){
   const [videos,generatingRuns]=await Promise.all([
-    Video.find({seriesId,status:{$in:UNPUBLISHED_STATUSES}}).select('title status createdAt renderPath').lean(),
+    Video.find({seriesId,status:{$in:UNPUBLISHED_STATUSES}}).select('title status createdAt renderPath skippedAt').lean(),
     AutopilotRun.find({seriesId,status:'GENERATING',...(excludeRunId?{_id:{$ne:excludeRunId}}:{})}).select('videoId').lean()
   ]);
   return pickBlocker({videos,generatingRuns});
@@ -54,6 +54,7 @@ function waitingButtons(blocker,runId){
   const rows=[];
   if(blocker.videoId&&blocker.status==='AWAITING_APPROVAL')rows.push([{text:'✅ Approve',callback_data:`p:${blocker.videoId}`},{text:'🎞 Open video',callback_data:`o:${blocker.videoId}`}]);
   else if(blocker.videoId)rows.push([{text:'🎞 Open video',callback_data:`o:${blocker.videoId}`}]);
+  if(blocker.videoId&&SKIPPABLE_STATUSES.includes(blocker.status))rows.push([{text:'⏭ Skip this video',callback_data:`s:${blocker.videoId}`},{text:'🗑 Delete',callback_data:`d:${blocker.videoId}`}]);
   rows.push([{text:'🆕 Make a new video anyway',callback_data:`w:${runId}`}]);
   return rows;
 }

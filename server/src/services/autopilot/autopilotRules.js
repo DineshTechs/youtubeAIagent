@@ -89,7 +89,7 @@ export function madeElsewhere(renderPath,platform=process.platform){
   return /^[A-Za-z]:[\\/]/.test(String(renderPath))!==(platform==='win32');
 }
 export function pickBlocker({videos=[],generatingRuns=[],platform=process.platform}={}){
-  const open=videos.filter(v=>UNPUBLISHED_STATUSES.includes(v.status)&&!madeElsewhere(v.renderPath,platform)).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+  const open=videos.filter(v=>UNPUBLISHED_STATUSES.includes(v.status)&&!v.skippedAt&&!madeElsewhere(v.renderPath,platform)).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   if(open.length){const v=open[0];return {videoId:String(v._id),title:v.title||'Untitled video',status:v.status,reason:blockerReason(v.status),createdAt:v.createdAt};}
   const run=generatingRuns.find(r=>!r.videoId);
   if(run)return {videoId:null,runId:String(run._id),title:'The previous automatic video',status:'QUEUED',reason:'is still being made'};
@@ -114,3 +114,6 @@ export function heldMessage(issues){
   const list=issues.map(i=>`• ${i}`).join('\n');
   return `Not published automatically, because:\n${list}\n\nWatch it, then approve it to publish it at the next time (or fix the scenes first).`;
 }
+
+// Videos the user can skip (not approved / not wanted): Autopilot stops waiting for them.
+export const SKIPPABLE_STATUSES=['SCENE_REVIEW','AWAITING_APPROVAL','APPROVED'];

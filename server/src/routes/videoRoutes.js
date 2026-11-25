@@ -1,10 +1,12 @@
 import {Router} from 'express';
-import {listVideos,getVideo,approveVideo,retryVideo,cancelVideo,deleteVideo,getVideoStats,regenerateScene,rerenderVideo,markVisualReview,rerunVideoQa,editScene,confirmRender,rebuildImages} from '../controllers/videoController.js';
+import {listVideos,getVideo,approveVideo,retryVideo,cancelVideo,deleteVideo,getVideoStats,regenerateScene,rerenderVideo,markVisualReview,rerunVideoQa,editScene,confirmRender,rebuildImages,skipVideo,unskipVideo} from '../controllers/videoController.js';
 const r=Router();
 r.get('/stats',getVideoStats);
 r.get('/',listVideos);
 r.get('/:id',getVideo);
 r.post('/:id/approve',approveVideo);
+r.post('/:id/skip',skipVideo);
+r.post('/:id/unskip',unskipVideo);
 r.post('/:id/qa',rerunVideoQa);
 r.post('/:id/visual-review',markVisualReview);
 r.post('/:id/rerender',rerenderVideo);

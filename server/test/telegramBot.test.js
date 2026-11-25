@@ -164,3 +164,29 @@ test('a missing video file explains which computer has it', () => {
   assert.match(missingFileMessage('/home/app/storage/final.mp4', 'win32'), /made on your server, so its file is not on the PC/);
   assert.match(missingFileMessage('D:\\WebApps\\x\\final.mp4', 'win32'), /missing on this computer/);
 });
+
+test('"⏭ Skip this video" asks first, then skips (only this chat\'s videos)', async () => {
+  const h = harness();
+  await h.press('s:v1');
+  assert.match(h.sent.filter(s => s.type === 'send').at(-1).text, /Skip <b>Honest woodcutter<\/b>\?/);
+  assert.equal(h.calls.filter(c => c.method === 'POST').length, 0, 'nothing skipped before confirming');
+  await h.press(h.button('Yes, skip it').callback_data);
+  assert.ok(h.calls.find(c => c.method === 'POST' && c.path === '/videos/v1/skip'));
+  const stranger = harness();
+  await stranger.press('s:vx');
+  assert.equal(stranger.calls.filter(c => c.method === 'POST').length, 0);
+  const card = harness();
+  await card.press('o:v1');
+  assert.ok(card.button('Skip'), 'video card offers Skip');
+});
+
+test('"🗑 Delete" on Autopilot messages asks first, then deletes', async () => {
+  const h = harness();
+  await h.press('d:v1');
+  assert.equal(h.calls.filter(c => c.method === 'DELETE').length, 0, 'nothing deleted before confirming');
+  await h.press(h.button('Yes, delete').callback_data);
+  assert.ok(h.calls.find(c => c.method === 'DELETE' && c.path === '/videos/v1'));
+  const stranger = harness();
+  await stranger.press('d:vx');
+  assert.equal(stranger.calls.filter(c => c.method === 'DELETE').length, 0, 'another profile is refused');
+});

@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 const schema = new mongoose.Schema({
   storyId:{type:mongoose.Schema.Types.ObjectId,ref:'Story'}, seriesId:{type:mongoose.Schema.Types.ObjectId,ref:'Series',index:true}, title:String,
   status:{type:String,enum:['QUEUED','PLANNED','SCRIPT_GENERATED','SCRIPT_QA','ASSETS_GENERATING','VIDEO_RENDERING','VIDEO_QA','SCENE_REVIEW','AWAITING_APPROVAL','APPROVED','UPLOADING','SCHEDULED','PUBLISHED','FAILED','CANCELLED'],default:'PLANNED'},
+  // Skipped by the user: Autopilot no longer waits for this video before making a new one.
+  skippedAt:{type:Date,default:null},
   statusHistory:[{status:String,at:{type:Date,default:Date.now},message:String,attempt:{type:Number,default:0},source:{type:String,default:'VIDEO'}}],
   durationSec:Number, renderPath:String, thumbnailPath:String, youtubeVideoId:String, scheduledAt:Date, youtubeMetadata:mongoose.Schema.Types.Mixed, pendingSceneEdit:mongoose.Schema.Types.Mixed,
   // prompt/promptKey/generatedAt describe what the image was MADE from (kept when reused);

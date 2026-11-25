@@ -44,6 +44,21 @@ export async function getVideo(req,res,next){try{
   res.json({...data,profile:withProfile.profile,sceneAssets,sceneAudioFiles,latestJob:jobs[0]||null,jobs});
 }catch(e){next(e);}}
 
+// Skip / un-skip: a skipped video stays as it is (you can still open, fix or approve it),
+// but Autopilot no longer waits for it before making the next video.
+const SKIPPABLE=['SCENE_REVIEW','AWAITING_APPROVAL','APPROVED'];
+export async function skipVideo(req,res,next){try{
+  const v=await Video.findById(req.params.id).select('status skippedAt').lean();
+  if(!v)return res.status(404).json({error:'Video not found'});
+  if(!SKIPPABLE.includes(v.status))return res.status(409).json({error:`A ${String(v.status).toLowerCase().replace(/_/g,' ')} video cannot be skipped.`});
+  const out=await Video.findByIdAndUpdate(req.params.id,{$set:{skippedAt:new Date()},$push:{statusHistory:{status:v.status,message:'Skipped by user: Autopilot will not wait for this video.',attempt:0,source:'VIDEO'}}},{returnDocument:'after'});
+  res.json(out);
+}catch(e){next(e);}}
+export async function unskipVideo(req,res,next){try{
+  const out=await Video.findByIdAndUpdate(req.params.id,{$set:{skippedAt:null}},{returnDocument:'after'});
+  if(!out)return res.status(404).json({error:'Video not found'});
+  res.json(out);
+}catch(e){next(e);}}
 export async function approveVideo(req,res,next){try{
   const current=await Video.findById(req.params.id).lean();
   if(!current)return res.status(404).json({error:'Video not found'});
@@ -51,7 +66,7 @@ export async function approveVideo(req,res,next){try{
   if(blockReason)return res.status(409).json({error:blockReason});
   const v=await Video.findOneAndUpdate(
     {_id:req.params.id,status:'AWAITING_APPROVAL'},
-    {$set:{status:'APPROVED'},$unset:{error:1},$push:{statusHistory:{status:'APPROVED',message:'Approved by user.',attempt:0,source:'VIDEO'}}},
+    {$set:{status:'APPROVED',skippedAt:null},$unset:{error:1},$push:{statusHistory:{status:'APPROVED',message:'Approved by user.',attempt:0,source:'VIDEO'}}},
     {returnDocument:'after'}
   );
   if(!v)return res.status(409).json({error:'Video is not awaiting approval or does not exist.'});

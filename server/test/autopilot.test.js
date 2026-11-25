@@ -129,3 +129,9 @@ test('a held video lists every reason, including which checks failed', () => {
   assert.match(m, /^Not published automatically, because:\n• Quality check failed/);
   assert.match(m, /approve it to publish it/);
 });
+
+test('a skipped video no longer holds up the next one', () => {
+  const v = {_id: 'b', title: 'Not wanted', status: 'AWAITING_APPROVAL', createdAt: ago(10)};
+  assert.equal(pickBlocker({videos: [v]}).videoId, 'b');
+  assert.equal(pickBlocker({videos: [{...v, skippedAt: new Date()}]}), null);
+});
