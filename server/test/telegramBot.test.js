@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createBot,parseCommand} from '../src/services/telegram/botCommands.js';
+import {createBot,parseCommand,missingFileMessage} from '../src/services/telegram/botCommands.js';
 
 function harness({profiles = [{id: 'p1', name: 'Kalyug', scheduleTime: '18:00'}], chat = '100'} = {}) {
   const sent = [], calls = [];
@@ -157,4 +157,10 @@ test('"Make a new video anyway" on an Autopilot waiting message asks first, then
   const stranger = harness();
   await stranger.press('W:r9');
   assert.equal(stranger.calls.filter(c => c.method === 'POST').length, 0, 'another profile is refused');
+});
+
+test('a missing video file explains which computer has it', () => {
+  assert.match(missingFileMessage('D:\\WebApps\\x\\final.mp4', 'linux'), /made on your Windows PC, so its file is not on the server/);
+  assert.match(missingFileMessage('/home/app/storage/final.mp4', 'win32'), /made on your server, so its file is not on the PC/);
+  assert.match(missingFileMessage('D:\\WebApps\\x\\final.mp4', 'win32'), /missing on this computer/);
 });

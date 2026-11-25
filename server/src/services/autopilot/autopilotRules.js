@@ -53,12 +53,15 @@ export function nextSlots(settings,now=new Date(),count=4){
 export function autopilotProblems(video,settings){
   const problems=[];
   if(!video)return ['Video not found.'];
-  if(video.status!=='AWAITING_APPROVAL')problems.push(`Video is ${video.status}, not awaiting approval.`);
-  if(!video.qa||video.qa.pass!==true)problems.push('Technical QA did not pass.');
+  if(video.status!=='AWAITING_APPROVAL')problems.push(`The video is "${String(video.status).toLowerCase().replace(/_/g,' ')}", not ready for approval.`);
+  const checks=Array.isArray(video.qa?.checks)?video.qa.checks:[];
+  const named=list=>list.slice(0,4).map(c=>`${c.name}: ${c.message||c.status}`).join('; ');
+  if(!video.qa)problems.push('No quality check (QA) report yet.');
+  else if(video.qa.pass!==true){const fails=checks.filter(c=>c.status==='FAIL');problems.push(`Quality check failed${fails.length?` — ${named(fails)}`:''}.`);}
   const score=Number(video.qa?.score);
-  if(Number.isFinite(score)&&score<settings.minQaScore)problems.push(`QA score ${score} is below the autopilot minimum ${settings.minQaScore}.`);
+  if(Number.isFinite(score)&&score<settings.minQaScore){const warns=checks.filter(c=>c.status==='WARN');problems.push(`Quality score ${score} is below your Autopilot minimum of ${settings.minQaScore}${warns.length?` (warnings: ${named(warns)})`:''}.`);}
   if(settings.blockStaleImages){const stale=(video.mediaAssetDetails||[]).filter(a=>a.stale).map(a=>a.sceneNumber);if(stale.length)problems.push(`Scene ${stale.join(', ')} image may not match the narration.`);}
-  if(!video.renderPath)problems.push('No rendered video file.');
+  if(!video.renderPath)problems.push('There is no finished video file.');
   return problems;
 }
 
@@ -78,8 +81,15 @@ export const UNPUBLISHED_STATUSES=[...MAKING_STATUSES,'SCENE_REVIEW','AWAITING_A
 const REASON={SCENE_REVIEW:'is waiting for you to finish the scene changes',AWAITING_APPROVAL:'is waiting for your approval',APPROVED:'is approved but not on YouTube yet',UPLOADING:'is still uploading'};
 export function blockerReason(status){return MAKING_STATUSES.includes(status)?'is still being made':REASON[status]||`is ${String(status||'').toLowerCase().replace(/_/g,' ')}`;}
 // videos: this profile's videos; generatingRuns: runs still GENERATING (a job may not have a video yet).
-export function pickBlocker({videos=[],generatingRuns=[]}={}){
-  const open=videos.filter(v=>UNPUBLISHED_STATUSES.includes(v.status)).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+// A video whose file path belongs to the other kind of computer (a Windows "D:\…" path on
+// the Linux server, or the reverse) was made elsewhere: this copy can't publish it, so it
+// neither holds up nor gets taken by this copy's Autopilot.
+export function madeElsewhere(renderPath,platform=process.platform){
+  if(!renderPath)return false;
+  return /^[A-Za-z]:[\\/]/.test(String(renderPath))!==(platform==='win32');
+}
+export function pickBlocker({videos=[],generatingRuns=[],platform=process.platform}={}){
+  const open=videos.filter(v=>UNPUBLISHED_STATUSES.includes(v.status)&&!madeElsewhere(v.renderPath,platform)).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   if(open.length){const v=open[0];return {videoId:String(v._id),title:v.title||'Untitled video',status:v.status,reason:blockerReason(v.status),createdAt:v.createdAt};}
   const run=generatingRuns.find(r=>!r.videoId);
   if(run)return {videoId:null,runId:String(run._id),title:'The previous automatic video',status:'QUEUED',reason:'is still being made'};
@@ -97,4 +107,10 @@ export function waitingDecision({run,blocker,settings,now=new Date(),heldVideoId
 }
 export function waitingMessage(blocker,slotLabel){
   return `No new video for ${slotLabel}: "${blocker.title}" ${blocker.reason}. A new video is made only after the previous one is published.${blocker.status==='AWAITING_APPROVAL'||blocker.status==='APPROVED'?' Approve it and it is published at this time.':''}`;
+}
+
+// The Telegram text for a video Autopilot did not publish: every reason, then what to do.
+export function heldMessage(issues){
+  const list=issues.map(i=>`• ${i}`).join('\n');
+  return `Not published automatically, because:\n${list}\n\nWatch it, then approve it to publish it at the next time (or fix the scenes first).`;
 }

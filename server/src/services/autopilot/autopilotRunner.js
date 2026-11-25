@@ -5,7 +5,7 @@ import Series from '../../models/Series.js';
 import Video from '../../models/Video.js';
 import GenerationJob from '../../models/GenerationJob.js';
 import AutopilotRun from '../../models/AutopilotRun.js';
-import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,UNPUBLISHED_STATUSES} from './autopilotRules.js';
+import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,heldMessage,UNPUBLISHED_STATUSES} from './autopilotRules.js';
 import {internalApi} from '../telegram/botRunner.js';
 import {notify} from '../telegram/notifier.js';
 import {readiness} from '../youtube/youtubeAccount.js';
@@ -18,9 +18,12 @@ const slotLabel=(d,tz)=>new Date(d).toLocaleString('en-IN',{timeZone:tz||'Asia/K
 async function note(run,set,message){
   await AutopilotRun.updateOne({_id:run._id},{$set:set,...(message?{$push:{log:{$each:[{at:new Date(),message}],$slice:-50}}}:{})});
 }
-async function problem(run,series,status,message){
+async function problem(run,series,status,message,{held=false}={}){
   await note(run,{status,error:message,nextActionAt:null},message);
-  notify('autopilot',{profileId:String(series._id),profileName:series.name,videoId:run.videoId?String(run.videoId):undefined,title:`Autopilot: slot ${slotLabel(run.slotAt,series.uploadSettings?.timezone)}`,message});
+  const videoId=run.videoId?String(run.videoId):undefined;
+  // Held for review: buttons to approve or open it straight from the message.
+  const buttons=held&&videoId?[[{text:'✅ Approve',callback_data:`p:${videoId}`},{text:'🎞 Open video',callback_data:`o:${videoId}`}]]:videoId?[[{text:'🎞 Open video',callback_data:`o:${videoId}`}]]:undefined;
+  notify('autopilot',{profileId:String(series._id),profileName:series.name,videoId,title:held?`Autopilot: video held for review (${slotLabel(run.slotAt,series.uploadSettings?.timezone)})`:`Autopilot: slot ${slotLabel(run.slotAt,series.uploadSettings?.timezone)}`,message,buttons});
 }
 
 async function startGeneration(run,series){
@@ -37,7 +40,7 @@ async function skipSlot(series,slotAt,message){
 // ---- Waiting for the previous video to be published ----
 async function blockerFor(seriesId,{excludeRunId}={}){
   const [videos,generatingRuns]=await Promise.all([
-    Video.find({seriesId,status:{$in:UNPUBLISHED_STATUSES}}).select('title status createdAt').lean(),
+    Video.find({seriesId,status:{$in:UNPUBLISHED_STATUSES}}).select('title status createdAt renderPath').lean(),
     AutopilotRun.find({seriesId,status:'GENERATING',...(excludeRunId?{_id:{$ne:excludeRunId}}:{})}).select('videoId').lean()
   ]);
   return pickBlocker({videos,generatingRuns});
@@ -112,7 +115,7 @@ async function advanceGenerating(run,series,settings){
   if(video?.status==='APPROVED')return note(run,{status:'APPROVED',nextActionAt:null},'Video was approved.');
   if(video?.status==='AWAITING_APPROVAL'){
     const issues=autopilotProblems(video,settings);
-    if(issues.length)return problem(run,series,'NEEDS_ATTENTION',`Not published automatically: ${issues.join(' ')} Review it in the dashboard or Telegram.`);
+    if(issues.length)return problem(run,series,'NEEDS_ATTENTION',heldMessage(issues),{held:video.status==='AWAITING_APPROVAL'});
     await internalApi('POST',`/videos/${video._id}/visual-review`,{imagesMatch:true,subtitlesReadable:true,ageAppropriate:true});
     await internalApi('POST',`/videos/${video._id}/approve`);
     await Video.updateOne({_id:video._id},{$push:{statusHistory:{status:'APPROVED',message:`Approved automatically by Autopilot (QA ${video.qa?.score ?? 'n/a'}/100).`,at:new Date(),attempt:0,source:'AUTOPILOT'}}});
@@ -128,7 +131,7 @@ async function advanceGenerating(run,series,settings){
     return;
   }
   // Finished but in another state (e.g. waiting for scene review).
-  if(job.status==='COMPLETED'&&video)return problem(run,series,'NEEDS_ATTENTION',`Video ended in status ${video.status}; it needs a manual decision.`);
+  if(job.status==='COMPLETED'&&video)return problem(run,series,'NEEDS_ATTENTION',heldMessage([`The video ended as "${String(video.status).toLowerCase().replace(/_/g,' ')}" instead of ready, so it needs your decision.`]));
 }
 
 async function advanceApproved(run,series,settings){

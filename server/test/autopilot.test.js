@@ -41,11 +41,11 @@ test('automatic approval only for clean, passing videos', () => {
   const s = normalizeAutopilot({enabled: true, minQaScore: 75});
   const good = {status: 'AWAITING_APPROVAL', qa: {pass: true, score: 88}, renderPath: 'x.mp4', mediaAssetDetails: [{sceneNumber: 1}]};
   assert.deepEqual(autopilotProblems(good, s), []);
-  assert.match(autopilotProblems({...good, qa: {pass: true, score: 60}}, s).join(), /below the autopilot minimum 75/);
-  assert.match(autopilotProblems({...good, qa: {pass: false, score: 90}}, s).join(), /did not pass/);
+  assert.match(autopilotProblems({...good, qa: {pass: true, score: 60}}, s).join(), /below your Autopilot minimum of 75/);
+  assert.match(autopilotProblems({...good, qa: {pass: false, score: 90}}, s).join(), /Quality check failed/);
   assert.match(autopilotProblems({...good, mediaAssetDetails: [{sceneNumber: 2, stale: true}]}, s).join(), /Scene 2 image may not match/);
   assert.deepEqual(autopilotProblems({...good, mediaAssetDetails: [{sceneNumber: 2, stale: true}]}, {...s, blockStaleImages: false}), []);
-  assert.match(autopilotProblems({...good, status: 'FAILED'}, s).join(), /FAILED/);
+  assert.match(autopilotProblems({...good, status: 'FAILED'}, s).join(), /"failed", not ready for approval/);
 });
 
 test('upload is scheduled for the slot when there is time, otherwise immediate', () => {
@@ -102,4 +102,30 @@ test('the Telegram message says why and what to do', () => {
   assert.match(m, /No new video for 24 Nov 2026, 7:30 pm: "Honest woodcutter" is waiting for your approval/);
   assert.match(m, /Approve it and it is published at this time/);
   assert.doesNotMatch(waitingMessage({title: 'X', status: 'VIDEO_RENDERING', reason: 'is still being made'}, 'now'), /Approve it/);
+});
+
+test('a video made on the other computer does not hold up this one', () => {
+  const pc = {_id: 'pc', title: 'Made on PC', status: 'AWAITING_APPROVAL', createdAt: ago(50), renderPath: 'D:\\WebApps\\x\\final.mp4'};
+  const srv = {_id: 'sv', title: 'Made here', status: 'AWAITING_APPROVAL', createdAt: ago(5), renderPath: '/home/app/storage/videos/sv/final.mp4'};
+  assert.equal(pickBlocker({videos: [pc], platform: 'linux'}), null);
+  assert.equal(pickBlocker({videos: [pc, srv], platform: 'linux'}).videoId, 'sv');
+  assert.equal(pickBlocker({videos: [pc], platform: 'win32'}).videoId, 'pc');
+  assert.equal(pickBlocker({videos: [{...pc, renderPath: null, status: 'VIDEO_RENDERING'}], platform: 'linux'}).videoId, 'pc', 'no file yet: still counts');
+});
+
+import {heldMessage} from '../src/services/autopilot/autopilotRules.js';
+test('a held video lists every reason, including which checks failed', () => {
+  const video = {status: 'AWAITING_APPROVAL', renderPath: '/x.mp4', qa: {pass: false, score: 60, checks: [
+    {name: 'Subtitles', status: 'FAIL', message: 'Subtitle text overflows the frame.'},
+    {name: 'Opening hook', status: 'WARN', message: 'Hook is longer than 3 seconds.'},
+    {name: 'Rendered file', status: 'PASS', message: 'ok'}]},
+    mediaAssetDetails: [{sceneNumber: 3, stale: true}]};
+  const issues = autopilotProblems(video, normalizeAutopilot({minQaScore: 70}));
+  assert.equal(issues.length, 3);
+  assert.match(issues[0], /Quality check failed — Subtitles: Subtitle text overflows the frame\./);
+  assert.match(issues[1], /Quality score 60 is below your Autopilot minimum of 70 \(warnings: Opening hook: Hook is longer than 3 seconds\.\)/);
+  assert.match(issues[2], /Scene 3 image may not match the narration/);
+  const m = heldMessage(issues);
+  assert.match(m, /^Not published automatically, because:\n• Quality check failed/);
+  assert.match(m, /approve it to publish it/);
 });

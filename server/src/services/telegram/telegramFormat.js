@@ -33,7 +33,7 @@ export function formatMessage(event,c={}){
     if(c.scheduledAt)lines.push(`Goes public: ${esc(new Date(c.scheduledAt).toLocaleString('en-IN',{timeZone:c.timezone||'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'}))}`);
     if(c.url)lines.push(esc(c.url));
   }
-  if(c.message&&['failed','cancelled','uploadFailed','retried','autopilot'].includes(event))lines.push(`<i>${esc(String(c.message).slice(0,600))}</i>`);
+  if(c.message&&['failed','cancelled','uploadFailed','retried','autopilot'].includes(event))lines.push(`<i>${esc(String(c.message).slice(0,event==='autopilot'?1500:600))}</i>`);
   return lines.join('\n');
 }
 

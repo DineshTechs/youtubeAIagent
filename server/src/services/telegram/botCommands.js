@@ -7,6 +7,15 @@ import {randomBytes} from 'node:crypto';
 import {esc} from './telegramFormat.js';
 
 const STATUS={QUEUED:'Queued',PLANNED:'Planned',SCRIPT_GENERATED:'Script ready',SCRIPT_QA:'Script QA',ASSETS_GENERATING:'Making images',VIDEO_RENDERING:'Rendering',VIDEO_QA:'Video QA',SCENE_REVIEW:'🎞 Scene review',AWAITING_APPROVAL:'⏳ Awaiting approval',APPROVED:'✅ Approved',UPLOADING:'Uploading',SCHEDULED:'🗓 Scheduled',PUBLISHED:'📺 Published',FAILED:'❌ Failed',CANCELLED:'⏹ Cancelled'};
+// The video file is not on the computer that answered (e.g. made on the Windows PC,
+// but the server's copy of the bot got the button press because both share one database).
+export function missingFileMessage(file,platform=process.platform){
+  const windowsPath=/^[A-Za-z]:[\\/]/.test(String(file||''));
+  const otherComputer=windowsPath!==(platform==='win32');
+  return otherComputer
+    ? `This video was made on your ${windowsPath?'Windows PC':'server'}, so its file is not on the ${platform==='win32'?'PC':'server'} that answered. Open it on the computer that made it, or re-render the video in this computer’s dashboard.\n\nTip: when the PC app and the server share one database and one Telegram bot, either of them may answer. Run only one of them at a time, or give them separate databases.`
+    : 'The video file is missing on this computer (it may have been cleaned up). Re-render the video in the dashboard to make it again.';
+}
 const ACTIVE=new Set(['QUEUED','RUNNING']);
 const CONFIRM={approve:true,delete:true,upload:true,schedule:true,regen:true,rebuild:true};
 const EDITABLE=new Set(['AWAITING_APPROVAL','APPROVED','FAILED','CANCELLED','SCENE_REVIEW']);
@@ -141,7 +150,7 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
       case 'send':{
         if(!v.renderPath)return tg.send(chatId,'This video has not been rendered yet.');
         try{return await tg.sendVideo(chatId,v.renderPath,cardText(v),cardMarkup(v,scope(chatId).find(p=>p.id===String(v.profile?.id))));}
-        catch(e){return tg.send(chatId,`Could not send the file: ${esc(e.message)}`);}
+        catch(e){return tg.send(chatId,e?.code==='ENOENT'?missingFileMessage(v.renderPath):`Could not send the file: ${esc(e.message)}`);}
       }
       case 'approve':await api('POST',`/videos/${videoId}/visual-review`,{imagesMatch:true,subtitlesReadable:true,ageAppropriate:true});await api('POST',`/videos/${videoId}/approve`);break;
       case 'delete':await api('DELETE',`/videos/${videoId}`);return tg.edit(chatId,messageId,`🗑 Deleted <b>${esc(v.title)}</b>.`,{inline_keyboard:[]});

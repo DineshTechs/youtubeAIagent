@@ -84,7 +84,10 @@ function startBot(token,profiles){
       }catch(e){
         if(state.stopped)break;
         failures++;
-        if(failures===1||failures%20===0)console.error(`Telegram bot polling error: ${e.message}`);
+        // 409 = another copy of the app (e.g. the PC and the server) is polling the same bot.
+        if(failures===1||failures%20===0)console.error(/\b409\b|conflict/i.test(e.message)
+          ?'Telegram bot: another copy of this app is using the same bot token (for example your PC and the server). Each button press goes to only one of them, so run only one copy, or use a different bot for each.'
+          :`Telegram bot polling error: ${e.message}`);
         await new Promise(r=>setTimeout(r,Math.min(60000,2000*failures)));
       }
     }
