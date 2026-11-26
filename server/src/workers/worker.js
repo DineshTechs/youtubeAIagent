@@ -18,7 +18,7 @@ import {renderVideo,getAudioDuration} from '../services/video/renderer.js';
 import {narrationLooksCut,minSpeechSeconds} from '../utils/audioTiming.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
 import {makeSrt} from '../utils/srt.js';
-import {applyOpeningHook} from '../utils/openingRetention.js';
+import {applyOpeningHook,chooseHook} from '../utils/openingRetention.js';
 import {spawn} from 'node:child_process';
 import ffmpegStatic from 'ffmpeg-static';
 import {optimizeForGeneration} from '../services/youtubeSkills/index.js';
@@ -167,10 +167,11 @@ async function processJob(job){
       const originalHook=String(storyData.hook||'').trim();
       const optimizedHook=String(youtubeOptimization.applied?.hook||'').trim();
       const requestedLanguage=job.payload?.language||series.language||'English';
-      const hindiRequested=String(requestedLanguage).toLowerCase().startsWith('hindi');
-      const englishRequested=String(requestedLanguage).toLowerCase().startsWith('english');
-      const optimizedHookMatchesLanguage=optimizedHook && (!hindiRequested||/[\u0900-\u097f]/u.test(optimizedHook)) && (!englishRequested||(/[a-z]/i.test(optimizedHook)&&!/[\u0900-\u097f]/u.test(optimizedHook)));
-      storyData.hook=optimizedHookMatchesLanguage?optimizedHook:originalHook;
+      // The skill's hook is written from the topic only: use it only if it is in the right
+      // language, long enough and about what the narration actually says.
+      const hookChoice=chooseHook({original:originalHook,optimized:optimizedHook,story:storyData,language:requestedLanguage});
+      storyData.hook=hookChoice.hook;
+      await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'info',message:`Opening hook: using the ${hookChoice.source==='optimized'?'YouTube-skill':"story's own"} hook (${hookChoice.reason}).`}}});
       const openingHookResult=applyOpeningHook(storyData,requestedLanguage);
       await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),message:openingHookResult.applied?(openingHookResult.inserted?`Opening hook inserted into spoken scene 1 narration (${requestedLanguage}).`:'Opening hook already present in scene 1 narration.'):`Opening hook not inserted: ${openingHookResult.reason}`,level:openingHookResult.applied?'info':'warning'}}});
       const qa=await traceStage(jobId,'SCRIPT_QA',{title:storyData?.title,sceneCount:Array.isArray(storyData?.scenes)?storyData.scenes.length:0,openingHook:openingHookResult},()=>aiProvider.qualityCheck({story:storyData,series,channelProfile}),{provider:job.payload?.aiProvider||'active'});

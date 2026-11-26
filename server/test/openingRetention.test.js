@@ -92,3 +92,22 @@ test('labels and quotes around a hook are removed', () => {
   assert.equal(cleanHook('Hook 2 (Curiosity): "What if one habit changed everything?"'), 'What if one habit changed everything?');
   assert.equal(cleanHook('**Opening hook:** Stop scrolling.'), 'Stop scrolling.');
 });
+
+import {chooseHook, hookFit} from '../src/utils/openingRetention.js';
+const story = {scenes: [
+  {narration: 'एक गाँव में रामू नाम का एक गरीब लकड़हारा रहता था। एक दिन उसकी कुल्हाड़ी नदी में गिर गई।'},
+  {narration: 'नदी से एक देवी प्रकट हुईं और उन्होंने रामू को सोने की कुल्हाड़ी दिखाई।'}]};
+const own = 'क्या आप जानते हैं कि एक गरीब लकड़हारे की ईमानदारी ने उसे नदी की देवी से सोने की कुल्हाड़ी दिला दी?';
+test('the story hook is kept when the skill hook is short or off-topic', () => {
+  assert.equal(chooseHook({original: own, optimized: 'सफलता का राज़!', story, language: 'Hindi'}).source, 'story');
+  const offTopic = chooseHook({original: own, optimized: 'आज हम जानेंगे कि शेयर बाज़ार में पैसा कैसे दुगना करें और अमीर बनें।', story, language: 'Hindi'});
+  assert.equal(offTopic.source, 'story');
+  assert.match(offTopic.reason, /does not match the narration/);
+  assert.equal(chooseHook({original: own, optimized: 'Did you know an honest woodcutter won a golden axe?', story, language: 'Hindi'}).source, 'story');
+});
+test('a skill hook about this story and long enough is used', () => {
+  const better = 'नदी में गिरी एक कुल्हाड़ी ने गरीब लकड़हारे रामू की किस्मत कैसे बदल दी? देवी ने उसे सोने की कुल्हाड़ी दिखाई, फिर क्या हुआ?';
+  const r = chooseHook({original: own, optimized: better, story, language: 'Hindi'});
+  assert.equal(r.source, 'optimized');
+  assert.ok(hookFit(better, story.scenes.map(s => s.narration).join(' ')).shared >= 4);
+});

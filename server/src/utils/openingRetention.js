@@ -100,3 +100,33 @@ export function applyOpeningHook(story, language = 'English') {
     sceneNumber: Number(firstScene.sceneNumber) || 1
   };
 }
+
+// ---- Choosing the opening hook ---------------------------------------------
+// The YouTube "yt-script" skill writes hooks from the topic alone, so its hook can be
+// short or about something the narration never says. It replaces the story's own hook
+// only when it is in the right language, long enough and clearly about this story.
+const STOP=new Set(('the a an and or but of to in on at for with from by is are was were be been it this that these those you your we our they their he she his her i me my not no yes do does did have has had will would can could should what why how when where who which there here than then so just very more most also into about over out up down if as one all any some each ' +
+  'और या है हैं था थी थे हो होता होती होते के का की को में से पर भी तो ही यह वह ये वो इस उस इन उन एक कि जो क्या क्यों कैसे कब कहाँ कौन नहीं ना हाँ मैं हम आप तुम उनका उसका अपना अपनी अपने लिए साथ तक बहुत अब फिर कुछ सब कर करना करते करती किया गया गई गए रहा रही रहे जब तब').split(/\s+/));
+export function contentWords(text){
+  return new Set(String(text||'').toLowerCase().normalize('NFC').split(/[^\p{L}\p{M}\p{N}]+/u).filter(w=>w&&!STOP.has(w)&&(/[\u0900-\u097f]/u.test(w)?w.length>=2:w.length>=3)));
+}
+export function hookFit(hook,narration){
+  const h=contentWords(hook),n=contentWords(narration);
+  const shared=[...h].filter(w=>n.has(w));
+  return {words:String(hook||'').trim().split(/\s+/).filter(Boolean).length,shared:shared.length,ratio:h.size?shared.length/h.size:0};
+}
+export const MIN_HOOK_WORDS=6;
+export function chooseHook({original,optimized,story,language='English'}){
+  const o=cleanHook(original),x=cleanHook(optimized);
+  const narration=(story?.scenes||[]).map(sc=>sc?.narration||'').join(' ');
+  const lang=String(language).toLowerCase();
+  const rightLanguage=t=>(!lang.startsWith('hindi')||/[\u0900-\u097f]/u.test(t))&&(!lang.startsWith('english')||(/[a-z]/i.test(t)&&!/[\u0900-\u097f]/u.test(t)));
+  const good=t=>{const f=hookFit(t,narration);return rightLanguage(t)&&f.words>=MIN_HOOK_WORDS&&f.shared>=2&&f.ratio>=0.3;};
+  if(!x)return {hook:o,source:'story',reason:'no optimized hook'};
+  if(!rightLanguage(x))return {hook:o,source:'story',reason:'optimized hook is in a different language'};
+  const fx=hookFit(x,narration);
+  if(fx.words<MIN_HOOK_WORDS)return {hook:o||x,source:o?'story':'optimized',reason:`optimized hook is too short (${fx.words} words)`};
+  if(o&&x.length<o.length*0.6&&good(o))return {hook:o,source:'story',reason:'optimized hook is much shorter than the story hook'};
+  if(!good(x))return {hook:o||x,source:o?'story':'optimized',reason:`optimized hook does not match the narration (${fx.shared} shared words)`};
+  return {hook:x,source:'optimized',reason:'optimized hook fits the narration'};
+}
