@@ -62,7 +62,12 @@ const schema = new mongoose.Schema({
     ttsFallbackEnabled: { type: Boolean, default: true },
     // Narration check after rendering, and its speech-to-text word check.
     narrationCheck: { type: Boolean, default: true },
-    narrationCheckWords: { type: Boolean, default: true }
+    narrationCheckWords: { type: Boolean, default: true },
+    // Speech-to-text used by the word check: auto (Groq, then OpenAI), groq or openai.
+    sttProvider: { type: String, default: 'auto' },
+    sttModels: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+    // How closely the spoken words must match the text: strict, normal or relaxed.
+    narrationMatchLevel: { type: String, default: 'normal' }
   },
   video: {
     width: { type: Number, default: 1080, min: 360, max: 2160 },

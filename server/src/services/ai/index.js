@@ -10,6 +10,7 @@ import { TEXT_CATALOG, COMPATIBLE_PROVIDERS, textCredentialsFrom, textKeyStatus,
 import { ttsCredentialsFrom, ttsKeyStatus, saveTtsKeys } from './ttsKeys.js';
 import { keyList, keyKind, pollinationsKeyUpdate } from './keyCatalog.js';
 import { checkCloudflare, checkGemini, checkOpenAI } from './keyChecks.js';
+import { STT_PROVIDERS, testStt } from '../media/narrationCheck.js';
 import { FREE_TTS_DEFAULTS } from '../media/freeTts.js';
 
 export const PROVIDERS = ['gemini', 'groq', 'cerebras', ...COMPATIBLE_PROVIDERS, 'openai', 'mock'];
@@ -136,7 +137,11 @@ function mediaMeta(settings = null) {
     mockMode: settings?.media?.mockMode ?? d.media.mockMode,
     pollinationsSafe: settings?.media?.pollinationsSafe ?? d.media.pollinationsSafe,
     narrationCheck: settings?.media?.narrationCheck !== false,
-    narrationCheckWords: settings?.media?.narrationCheckWords !== false
+    narrationCheckWords: settings?.media?.narrationCheckWords !== false,
+    sttProvider: ['auto','groq','openai'].includes(settings?.media?.sttProvider) ? settings.media.sttProvider : 'auto',
+    sttModels: settings?.media?.sttModels || {},
+    narrationMatchLevel: ['strict','normal','relaxed'].includes(settings?.media?.narrationMatchLevel) ? settings.media.narrationMatchLevel : 'normal',
+    sttKeys: { groq: Boolean(env.groqKey), openai: Boolean(env.openaiKey) }
   };
 }
 
@@ -226,7 +231,10 @@ export async function getMediaSettings() {
     mockMode: media.mockMode ?? env.mediaMock,
     pollinationsSafe: media.pollinationsSafe ?? (String(env.pollinationsSafe).toLowerCase()==='true'),
     narrationCheck: media.narrationCheck !== false,
-    narrationCheckWords: media.narrationCheckWords !== false
+    narrationCheckWords: media.narrationCheckWords !== false,
+    sttProvider: ['auto','groq','openai'].includes(media.sttProvider) ? media.sttProvider : 'auto',
+    sttModels: media.sttModels || {},
+    narrationMatchLevel: ['strict','normal','relaxed'].includes(media.narrationMatchLevel) ? media.narrationMatchLevel : 'normal'
   };
 }
 
@@ -271,6 +279,9 @@ export async function updateAIConfig(patch = {}) {
   if (patch.media?.imageQuality) allowed['media.imageQuality']=patch.media.imageQuality;
   if (patch.media?.ttsModels) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsModels[p]==='string' && patch.media.ttsModels[p].trim()) allowed[`media.ttsModels.${p}`]=patch.media.ttsModels[p].trim();
   if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string') allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim(); // '' = provider default
+  if (['auto','groq','openai'].includes(patch.media?.sttProvider)) allowed['media.sttProvider']=patch.media.sttProvider;
+  if (['strict','normal','relaxed'].includes(patch.media?.narrationMatchLevel)) allowed['media.narrationMatchLevel']=patch.media.narrationMatchLevel;
+  if (patch.media?.sttModels) for (const p of Object.keys(STT_PROVIDERS)) if (STT_PROVIDERS[p].models.includes(patch.media.sttModels[p])) allowed[`media.sttModels.${p}`]=patch.media.sttModels[p];
   for (const k of ['generationEnabled','mockMode','pollinationsSafe','narrationCheck','narrationCheckWords']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
   if (patch.video) {
     for (const k of ['width','height','fps','imageFit']) if (patch.video[k] != null) allowed[`video.${k}`]=patch.video[k];
@@ -425,4 +436,11 @@ export async function setMediaPriority(type, { order, fallbackEnabled } = {}) {
   if (typeof fallbackEnabled === 'boolean') set[`media.${key}FallbackEnabled`] = fallbackEnabled;
   if (Object.keys(set).length) await AISettings.updateOne({ key: 'global' }, { $set: set }, { upsert: true });
   return getAISettings();
+}
+
+// Settings → AI providers → Narration check → Test.
+export async function testSpeechToText(input = {}) {
+  const settings = await getGlobalSettings();
+  const m = settings?.media || {};
+  return testStt(env, { choice: input.provider || m.sttProvider || 'auto', models: { ...(m.sttModels || {}), ...(input.model && input.provider ? { [input.provider]: input.model } : {}) } });
 }

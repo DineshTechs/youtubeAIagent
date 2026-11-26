@@ -35,7 +35,8 @@ export function textSimilarity(a, b) {
 const short = (t, n = 90) => { const s = String(t || '').replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 // scenes: [{sceneNumber, text, durationSec, exists, voice, transcript?, transcribeError?}]
-export function judgeNarration(scenes, {transcribed = false, sttProvider = ''} = {}) {
+export function judgeNarration(scenes, {transcribed = false, sttProvider = '', level = 'normal'} = {}) {
+  const L = MATCH_LEVELS[level] || MATCH_LEVELS.normal;
   const issues = [], warnings = [], out = [];
   for (const sc of scenes) {
     const r = {sceneNumber: sc.sceneNumber, durationSec: sc.durationSec, status: 'PASS', notes: []};
@@ -50,8 +51,8 @@ export function judgeNarration(scenes, {transcribed = false, sttProvider = ''} =
         r.match = Number(textSimilarity(sc.text, sc.transcript).toFixed(2));
         r.heard = short(sc.transcript, 160);
         if (!letters(sc.transcript)) fail('has no words that speech-to-text could hear.');
-        else if (r.match < MATCH_FAIL) fail(`does not say its text (match ${Math.round(r.match * 100)}%). Heard: “${short(sc.transcript)}”`);
-        else if (r.match < MATCH_WARN) warn(`only partly matches its text (match ${Math.round(r.match * 100)}%).`);
+        else if (r.match < L.fail) fail(`does not say its text (match ${Math.round(r.match * 100)}%). Heard: “${short(sc.transcript)}”`);
+        else if (r.match < L.warn) warn(`only partly matches its text (match ${Math.round(r.match * 100)}%).`);
       } else if (sc.transcribeError) warn(`words were not checked (${short(sc.transcribeError, 80)}).`);
     }
     out.push(r);
@@ -63,10 +64,32 @@ export function judgeNarration(scenes, {transcribed = false, sttProvider = ''} =
 }
 
 // ---- Speech-to-text (Whisper on Groq, else OpenAI) ----
-export function sttProviderFrom(env) {
-  if (env.groqKey) return {name: 'Groq Whisper', url: 'https://api.groq.com/openai/v1/audio/transcriptions', key: env.groqKey, model: 'whisper-large-v3'};
-  if (env.openaiKey) return {name: 'OpenAI Whisper', url: 'https://api.openai.com/v1/audio/transcriptions', key: env.openaiKey, model: 'whisper-1'};
+export const STT_PROVIDERS = {
+  groq: {name: 'Groq Whisper', keyField: 'groqKey', keyName: 'Groq', base: 'https://api.groq.com/openai/v1', models: ['whisper-large-v3', 'whisper-large-v3-turbo'], free: true},
+  openai: {name: 'OpenAI', keyField: 'openaiKey', keyName: 'OpenAI', base: 'https://api.openai.com/v1', models: ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'], free: false}
+};
+export const MATCH_LEVELS = {strict: {fail: 0.6, warn: 0.8}, normal: {fail: MATCH_FAIL, warn: MATCH_WARN}, relaxed: {fail: 0.4, warn: 0.6}};
+// choice: 'auto' (Groq, then OpenAI) | 'groq' | 'openai'; models: {groq, openai}
+export function sttProviderFrom(env, {choice = 'auto', models = {}} = {}) {
+  const ids = choice === 'groq' || choice === 'openai' ? [choice] : ['groq', 'openai'];
+  for (const id of ids) {
+    const p = STT_PROVIDERS[id], key = env?.[p.keyField];
+    if (!key) continue;
+    const model = p.models.includes(models?.[id]) ? models[id] : p.models[0];
+    return {id, name: p.name, url: `${p.base}/audio/transcriptions`, key, model};
+  }
   return null;
+}
+// Settings → Narration check → Test: checks the key and that the model is offered.
+export async function testStt(env, {choice, models} = {}, fetchImpl = fetch) {
+  const p = sttProviderFrom(env, {choice, models});
+  if (!p) throw new Error(choice === 'openai' ? 'No OpenAI key: add one in API keys.' : choice === 'groq' ? 'No Groq key: add one (free) in API keys.' : 'No Groq or OpenAI key: add one in API keys.');
+  const r = await fetchImpl(`${STT_PROVIDERS[p.id].base}/models`, {headers: {Authorization: `Bearer ${p.key}`}, signal: AbortSignal.timeout(15000)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`${p.name} rejected the key (${r.status}): ${j.error?.message || 'request failed'}`);
+  const ids = (j.data || []).map(m => m.id);
+  if (ids.length && !ids.includes(p.model)) throw new Error(`${p.name} key works, but the model "${p.model}" is not available to it. Pick another model.`);
+  return {ok: true, message: `${p.name} works with ${p.model}.`, provider: p.id, model: p.model};
 }
 const LANG = {hindi: 'hi', english: 'en', marathi: 'mr', bengali: 'bn', tamil: 'ta', telugu: 'te', gujarati: 'gu', punjabi: 'pa', urdu: 'ur', kannada: 'kn', malayalam: 'ml'};
 export const languageCode = l => LANG[String(l || '').toLowerCase().split(/[\s(]/)[0]] || '';
@@ -86,8 +109,8 @@ export async function transcribe(file, {provider, language, prompt = ''}, fetchI
 
 // Runs the whole check. getDuration(file) → seconds. Speech-to-text problems never fail
 // the video by themselves; they are reported as "words not checked".
-export async function checkNarration({scenes, files, durations, language, env, getDuration, title = '', topic = '', checkWords = true, fetchImpl = fetch, onProgress = () => {}}) {
-  const provider = checkWords ? sttProviderFrom(env || {}) : null;
+export async function checkNarration({scenes, files, durations, language, env, getDuration, title = '', topic = '', checkWords = true, sttChoice = 'auto', sttModels = {}, level = 'normal', fetchImpl = fetch, onProgress = () => {}}) {
+  const provider = checkWords ? sttProviderFrom(env || {}, {choice: sttChoice, models: sttModels}) : null;
   const rows = [];
   let sttBroken = '';
   for (let i = 0; i < scenes.length; i++) {
@@ -104,7 +127,8 @@ export async function checkNarration({scenes, files, durations, language, env, g
     } else if (exists && sttBroken) row.transcribeError = sttBroken;
     rows.push(row);
   }
-  const result = judgeNarration(rows, {transcribed: rows.some(r => typeof r.transcript === 'string'), sttProvider: provider?.name || ''});
+  const result = judgeNarration(rows, {transcribed: rows.some(r => typeof r.transcript === 'string'), sttProvider: provider ? `${provider.name} (${provider.model})` : '', level});
+  if (checkWords && !provider && sttChoice !== 'auto') result.summary = result.summary.replace(/words not checked: add a Groq[^.;]*/, `words not checked: no ${STT_PROVIDERS[sttChoice]?.keyName || ''} key`);
   if (!checkWords) result.summary = result.summary.replace(/words not checked: add a Groq[^.;]*/, 'word check turned off in Settings');
   return addOpening(result, judgeOpening({scenes, title, topic, transcript: rows[0]?.transcript}));
 }

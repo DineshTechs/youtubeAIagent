@@ -133,6 +133,36 @@ function ApiKeysPanel({apiJson,json,busy,results,onTest,onSaved}){
   </div>)}</div>;
 }
 
+// Settings → AI providers → Narration check: on/off, speech-to-text service and model, strictness.
+const STT={groq:{name:'Groq Whisper',free:true,models:[['whisper-large-v3','whisper-large-v3 (most accurate)'],['whisper-large-v3-turbo','whisper-large-v3-turbo (faster)']]},openai:{name:'OpenAI',free:false,models:[['whisper-1','whisper-1'],['gpt-4o-mini-transcribe','gpt-4o-mini-transcribe'],['gpt-4o-transcribe','gpt-4o-transcribe (most accurate)']]}};
+function NarrationCheckPanel({media,busy,save,apiJson,json,openKeys}){
+  const [result,setResult]=useState(null);
+  const on=media.narrationCheck!==false,words=media.narrationCheckWords!==false,choice=media.sttProvider||'auto',keys=media.sttKeys||{};
+  const using=choice==='auto'?(keys.groq?'groq':keys.openai?'openai':null):(keys[choice]?choice:null);
+  async function test(){setResult({pending:true});try{const r=await apiJson('/ai/test-stt',json('POST',{provider:choice==='auto'?undefined:choice}),0);setResult({ok:true,message:r.message,at:Date.now()});}catch(e){setResult({ok:false,message:/404|Cannot POST/i.test(e.message)?'Restart the backend to use this test.':e.message,at:Date.now()});}}
+  return <>
+    <Card eyebrow="NARRATION CHECK" title="What is checked" actions={<span className="muted small">Runs after each video is rendered</span>}>
+      <Toggle checked={on} onChange={v=>save({narrationCheck:v},'Narration check')} label="Check the narration of every video" hint="Each scene: audio complete (not cut, not far too long) and one voice for the whole video. The opening: a complete sentence that fits the rest of the story. Autopilot does not publish a video that fails (switch per profile in Autopilot)."/>
+      <Toggle checked={words} disabled={!on} onChange={v=>save({narrationCheckWords:v},'Word check')} label="Also check the spoken words (speech-to-text)" hint="Listens to each scene and compares what is said with the text. One short request per scene."/>
+    </Card>
+    <Card eyebrow="NARRATION CHECK" title="Speech-to-text service" actions={<span className="muted small">{using?`Using ${STT[using].name}`:'No key yet'}</span>}>
+      <div className={`formGrid${!on||!words?' dim':''}`}>
+        <Field label="Service" hint="Auto uses Groq (free) when its key is set, otherwise OpenAI."><select value={choice} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttProvider:e.target.value},'Speech-to-text service');}}>
+          <option value="auto">Auto (Groq, then OpenAI)</option><option value="groq">Groq Whisper (free)</option><option value="openai">OpenAI (paid)</option></select></Field>
+        {['groq','openai'].filter(id=>choice==='auto'||choice===id).map(id=><Field key={id} label={`${STT[id].name} model`} hint={keys[id]?'Key is set.':'No key yet.'}><select value={media.sttModels?.[id]||STT[id].models[0][0]} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttModels:{[id]:e.target.value}},`${STT[id].name} model`);}}>{STT[id].models.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Field>)}
+        <Field label="How closely the words must match" hint="Strict flags small differences; Relaxed only flags audio that says something clearly different."><select value={media.narrationMatchLevel||'normal'} disabled={!on||!words||busy} onChange={e=>save({narrationMatchLevel:e.target.value},'Match level')}>
+          <option value="strict">Strict (fail below 60%)</option><option value="normal">Normal (fail below 50%)</option><option value="relaxed">Relaxed (fail below 40%)</option></select></Field>
+      </div>
+      <div className="row wrap">
+        <button className="ghost" disabled={!on||!words||busy||result?.pending} onClick={test}>Test speech-to-text</button>
+        <button className="ghost" onClick={openKeys}>{using?'Edit keys':'Add a Groq or OpenAI key'}</button>
+      </div>
+      {result&&<div className={`prioResult ${result.pending?'pending':result.ok?'ok':'bad'}`}>{result.pending?<><span className="spinner" aria-hidden="true"/>Testing…</>:<>{result.ok?'✓':'✕'} {result.message}<em> · {new Date(result.at).toLocaleTimeString()}</em></>}</div>}
+      {!using&&on&&words&&<p className="muted small">Without a {choice==='openai'?'OpenAI':choice==='groq'?'Groq':'Groq or OpenAI'} key the other checks still run; the report says "words not checked".</p>}
+    </Card>
+  </>;
+}
+
 function PriorityList({kind,items,order,fallbackEnabled,busy,results,onSave,onTest,onEdit,editLabel,describe,fallbackText}){
   const usable=order.filter(id=>items[id]?.configured);
   const others=Object.keys(items).filter(id=>!order.includes(id));
@@ -997,7 +1027,7 @@ function App(){
       {aiMsg&&<div className="banner info">{aiMsg}{aiSavedAt&&<small className="muted"> · {aiSavedAt.toLocaleTimeString()}</small>}</div>}
       {!ai&&(aiError?<div className="banner error"><span>Couldn't load settings: {aiError}. Retrying automatically…</span><button className="ghost" onClick={loadAI}>Retry now</button></div>:<p className="muted">Loading settings…</p>)}
       {ai&&settingsTab==='providers'&&<>
-        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
+        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['check','🎧','Narration check',ai.media?.narrationCheck===false?'Off':ai.media?.narrationCheckWords===false?'On · words off':`On · ${({auto:'auto',groq:'Groq',openai:'OpenAI'})[ai.media?.sttProvider||'auto']}`,0],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'||id==='check'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
         {providerTab==='script'&&<>
         <Card eyebrow="SCRIPT AI" title="Order of providers" actions={<span className="muted small">Main: <b>{providers[ai.activeProvider]?.name||'—'}</b></span>}>
           <p className="muted small">Scripts, script checks, image planning, SEO and trending topics use these providers <b>from top to bottom</b>. Use ↑ ↓ to change the order.</p>
@@ -1019,6 +1049,7 @@ function App(){
           <p className="muted small">Model names, temperature and token limits are under Advanced.</p>
         </Card>
         </>}
+        {providerTab==='check'&&<NarrationCheckPanel media={ai.media||{}} busy={aiBusy} save={(m,what)=>saveAIConfig({media:m},what)} apiJson={apiJson} json={json} openKeys={()=>setProviderTab('keys')}/>}
         {providerTab==='keys'&&<Card eyebrow="ALL PROVIDERS" title="API keys" actions={<span className="muted small">Keys are stored encrypted and never shown</span>}>
           <p className="muted small">Every key the app uses, in one place. <b>Edit / replace</b> saves a new key over the old one (also over a key from the server’s .env). Then use <b>Test</b> to check it.</p>
           <ApiKeysPanel apiJson={apiJson} json={json} busy={aiBusy} results={testResults} onTest={(type,id)=>type==='text'?testAI(id):testMedia(type,id)} onSaved={setAi}/>
@@ -1041,10 +1072,6 @@ function App(){
         <Card eyebrow="NARRATION" title="Order of providers" actions={<span className="muted small">Main: <b>{ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name||'—'}</b></span>}>
           <p className="muted small">A video is always narrated by <b>one</b> provider. If the first one fails, the <b>whole video</b> is re-recorded with the next one, so voices are never mixed.</p>
           <PriorityList kind="tts" items={ai.media?.ttsProviders||{}} order={ai.ttsPriority?.order||[ai.media?.ttsProvider].filter(Boolean)} fallbackEnabled={ai.ttsPriority?.fallbackEnabled} busy={aiBusy} results={testResults} onSave={b=>saveMediaPriority('tts',b)} onTest={id=>testMedia('tts',id)} onEdit={id=>{if(NEW_TTS.includes(id)&&!ai.media?.ttsProviders?.[id]?.configured){setKeyProvider(id);setTimeout(()=>document.getElementById('tts-keys')?.scrollIntoView({behavior:'smooth',block:'start'}),50);return;}setTtsEdit(id);if(NEW_TTS.includes(id))setKeyProvider(id);setTimeout(()=>document.getElementById('tts-voice-edit')?.scrollIntoView({behavior:'smooth',block:'center'}),50);}} editLabel={(id,p)=>NEW_TTS.includes(id)&&!p.configured?'Set up key':'Voice'} describe={(id,p)=>`${p.voice?`${p.voice} · `:''}${id==='mock'?'no audio':ai.media?.ttsHindi?.[id]?'🇮🇳 Hindi + English':'English only'}${p.freeNote?` · ${p.freeNote}`:''}`} fallbackText="If the narration provider fails, re-record the whole video with the next one"/>
-        </Card>
-        <Card eyebrow="NARRATION" title="Narration check" actions={<span className="muted small">Runs after each video is rendered</span>}>
-          <Toggle checked={ai.media?.narrationCheck!==false} onChange={v=>saveAIConfig({media:{narrationCheck:v}},'Narration check')} label="Check the narration of every video" hint="Each scene: audio complete (not cut, not far too long), one voice. The opening: a complete sentence that fits the rest of the story. Autopilot does not publish a video that fails (switch per profile in Autopilot)."/>
-          <Toggle checked={ai.media?.narrationCheckWords!==false} disabled={ai.media?.narrationCheck===false} onChange={v=>saveAIConfig({media:{narrationCheckWords:v}},'Word check')} label="Also check the spoken words (speech-to-text)" hint="Listens to each scene with Groq (free) or OpenAI Whisper and compares it with the text. Needs a Groq or OpenAI key; uses one short request per scene."/>
         </Card>
         <Card eyebrow="NARRATION" title="Voice & keys">
           <div className="formGrid" id="tts-voice-edit">

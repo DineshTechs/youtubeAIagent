@@ -45,7 +45,7 @@ test('Autopilot holds a video whose narration check failed (and can be told not 
 
 test('speech-to-text: Groq first, then OpenAI; language codes', () => {
   assert.equal(sttProviderFrom({groqKey: 'g', openaiKey: 'o'}).name, 'Groq Whisper');
-  assert.equal(sttProviderFrom({openaiKey: 'o'}).name, 'OpenAI Whisper');
+  assert.equal(sttProviderFrom({openaiKey: 'o'}).name, 'OpenAI');
   assert.equal(sttProviderFrom({}), null);
   assert.equal(languageCode('Hindi'), 'hi');
   assert.equal(languageCode('English (India)'), 'en');
@@ -98,4 +98,23 @@ test('the opening must fit the rest of the story', () => {
   const r = addOpening(judgeNarration([ok(6.5)]), off);
   assert.equal(r.pass, false);
   assert.match(r.issues[0], /out of context/);
+});
+
+import {testStt, STT_PROVIDERS} from '../src/services/media/narrationCheck.js';
+test('speech-to-text choice, model and strictness', async () => {
+  assert.equal(sttProviderFrom({groqKey: 'g', openaiKey: 'o'}, {choice: 'openai'}).name, 'OpenAI');
+  assert.equal(sttProviderFrom({groqKey: 'g'}, {choice: 'openai'}), null, 'chosen provider without a key: none');
+  assert.equal(sttProviderFrom({groqKey: 'g'}, {models: {groq: 'whisper-large-v3-turbo'}}).model, 'whisper-large-v3-turbo');
+  assert.equal(sttProviderFrom({groqKey: 'g'}, {models: {groq: 'made-up'}}).model, 'whisper-large-v3', 'unknown model falls back');
+  const scene = {...ok(6.5), transcript: 'एक गाँव में रामू नाम का लकड़हारा था'};
+  const m = textSimilarity(hi, scene.transcript);
+  assert.ok(m > 0.4 && m < 0.8, `partial match ${m}`);
+  assert.equal(judgeNarration([scene], {level: 'relaxed'}).scenes[0].status !== 'FAIL', true);
+  assert.equal(judgeNarration([scene], {level: 'strict'}).scenes[0].status !== 'PASS', true);
+  const okFetch = async () => new Response(JSON.stringify({data: [{id: 'whisper-large-v3'}, {id: 'whisper-large-v3-turbo'}]}), {status: 200});
+  assert.match((await testStt({groqKey: 'g'}, {choice: 'groq'}, okFetch)).message, /Groq Whisper works with whisper-large-v3/);
+  await assert.rejects(testStt({openaiKey: 'o'}, {choice: 'openai', models: {openai: 'gpt-4o-transcribe'}}, okFetch), /not available/);
+  await assert.rejects(testStt({groqKey: 'g'}, {}, async () => new Response('{"error":{"message":"Invalid API Key"}}', {status: 401})), /rejected the key \(401\): Invalid API Key/);
+  await assert.rejects(testStt({}, {choice: 'groq'}), /No Groq key/);
+  assert.ok(STT_PROVIDERS.groq.free);
 });
