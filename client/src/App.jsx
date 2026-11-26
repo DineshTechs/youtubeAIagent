@@ -134,11 +134,19 @@ function ApiKeysPanel({apiJson,json,busy,results,onTest,onSaved}){
 }
 
 // Settings → AI providers → Narration check: on/off, speech-to-text service and model, strictness.
-const STT={groq:{name:'Groq Whisper',free:true,models:[['whisper-large-v3','whisper-large-v3 (most accurate)'],['whisper-large-v3-turbo','whisper-large-v3-turbo (faster)']]},openai:{name:'OpenAI',free:false,models:[['whisper-1','whisper-1'],['gpt-4o-mini-transcribe','gpt-4o-mini-transcribe'],['gpt-4o-transcribe','gpt-4o-transcribe (most accurate)']]}};
+const STT={
+  groq:{name:'Groq Whisper',key:'Groq',free:true,models:[['whisper-large-v3','whisper-large-v3 (most accurate)'],['whisper-large-v3-turbo','whisper-large-v3-turbo (faster)']]},
+  cloudflare:{name:'Cloudflare Workers AI Whisper',key:'Cloudflare (token + account ID)',free:true,models:[['@cf/openai/whisper-large-v3-turbo','whisper-large-v3-turbo']]},
+  gemini:{name:'Gemini',key:'Gemini',free:true,models:[['gemini-2.5-flash','gemini-2.5-flash'],['gemini-2.5-flash-lite','gemini-2.5-flash-lite (cheaper)'],['gemini-2.0-flash','gemini-2.0-flash']]},
+  deepgram:{name:'Deepgram',key:'Deepgram',free:false,models:[['nova-2','nova-2 (Hindi)'],['nova-3','nova-3'],['whisper-large','whisper-large']]},
+  aiawaaz:{name:'AI Awaaz',key:'AI Awaaz',free:false,models:[]},
+  elevenlabs:{name:'ElevenLabs Scribe',key:'ElevenLabs',free:false,models:[['scribe_v1','scribe_v1']]},
+  openai:{name:'OpenAI',key:'OpenAI',free:false,models:[['whisper-1','whisper-1'],['gpt-4o-mini-transcribe','gpt-4o-mini-transcribe'],['gpt-4o-transcribe','gpt-4o-transcribe (most accurate)']]}};
+const STT_AUTO=['groq','cloudflare','gemini','deepgram','aiawaaz','elevenlabs','openai'];
 function NarrationCheckPanel({media,busy,save,apiJson,json,openKeys}){
   const [result,setResult]=useState(null);
   const on=media.narrationCheck!==false,words=media.narrationCheckWords!==false,choice=media.sttProvider||'auto',keys=media.sttKeys||{};
-  const using=choice==='auto'?(keys.groq?'groq':keys.openai?'openai':null):(keys[choice]?choice:null);
+  const using=choice==='auto'?(STT_AUTO.find(id=>keys[id])||null):(keys[choice]?choice:null);
   async function test(){setResult({pending:true});try{const r=await apiJson('/ai/test-stt',json('POST',{provider:choice==='auto'?undefined:choice}),0);setResult({ok:true,message:r.message,at:Date.now()});}catch(e){setResult({ok:false,message:/404|Cannot POST/i.test(e.message)?'Restart the backend to use this test.':e.message,at:Date.now()});}}
   return <>
     <Card eyebrow="NARRATION CHECK" title="What is checked" actions={<span className="muted small">Runs after each video is rendered</span>}>
@@ -147,18 +155,19 @@ function NarrationCheckPanel({media,busy,save,apiJson,json,openKeys}){
     </Card>
     <Card eyebrow="NARRATION CHECK" title="Speech-to-text service" actions={<span className="muted small">{using?`Using ${STT[using].name}`:'No key yet'}</span>}>
       <div className={`formGrid${!on||!words?' dim':''}`}>
-        <Field label="Service" hint="Auto uses Groq (free) when its key is set, otherwise OpenAI."><select value={choice} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttProvider:e.target.value},'Speech-to-text service');}}>
-          <option value="auto">Auto (Groq, then OpenAI)</option><option value="groq">Groq Whisper (free)</option><option value="openai">OpenAI (paid)</option></select></Field>
-        {['groq','openai'].filter(id=>choice==='auto'||choice===id).map(id=><Field key={id} label={`${STT[id].name} model`} hint={keys[id]?'Key is set.':'No key yet.'}><select value={media.sttModels?.[id]||STT[id].models[0][0]} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttModels:{[id]:e.target.value}},`${STT[id].name} model`);}}>{STT[id].models.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Field>)}
+        <Field label="Service" hint="Auto uses the first one with a key, free ones first: Groq, Cloudflare, Gemini, then Deepgram, AI Awaaz, ElevenLabs, OpenAI."><select value={choice} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttProvider:e.target.value},'Speech-to-text service');}}>
+          <option value="auto">Auto (first one with a key)</option>{STT_AUTO.map(id=><option key={id} value={id}>{STT[id].name}{STT[id].free?' (free tier)':''}{keys[id]?'':' — no key'}</option>)}</select></Field>
+        {(choice==='aiawaaz'||(choice==='auto'&&using==='aiawaaz'))&&<Field label="AI Awaaz" hint={keys.aiawaaz?'Uses the AI Awaaz key and MCP address from API keys (relay included). Its speech-to-text tool is found automatically.':'No AI Awaaz key yet.'}><input value={keys.aiawaaz?'Key is set':'No key'} disabled/></Field>}
+        {[choice==='auto'?using:choice].filter(id=>id&&STT[id]?.models.length).map(id=><Field key={id} label={`${STT[id].name} model`} hint={keys[id]?'Key is set.':'No key yet.'}><select value={media.sttModels?.[id]||STT[id].models[0][0]} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttModels:{[id]:e.target.value}},`${STT[id].name} model`);}}>{STT[id].models.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Field>)}
         <Field label="How closely the words must match" hint="Strict flags small differences; Relaxed only flags audio that says something clearly different."><select value={media.narrationMatchLevel||'normal'} disabled={!on||!words||busy} onChange={e=>save({narrationMatchLevel:e.target.value},'Match level')}>
           <option value="strict">Strict (fail below 60%)</option><option value="normal">Normal (fail below 50%)</option><option value="relaxed">Relaxed (fail below 40%)</option></select></Field>
       </div>
       <div className="row wrap">
         <button className="ghost" disabled={!on||!words||busy||result?.pending} onClick={test}>Test speech-to-text</button>
-        <button className="ghost" onClick={openKeys}>{using?'Edit keys':'Add a Groq or OpenAI key'}</button>
+        <button className="ghost" onClick={openKeys}>{using?'Edit keys':'Add a key'}</button>
       </div>
       {result&&<div className={`prioResult ${result.pending?'pending':result.ok?'ok':'bad'}`}>{result.pending?<><span className="spinner" aria-hidden="true"/>Testing…</>:<>{result.ok?'✓':'✕'} {result.message}<em> · {new Date(result.at).toLocaleTimeString()}</em></>}</div>}
-      {!using&&on&&words&&<p className="muted small">Without a {choice==='openai'?'OpenAI':choice==='groq'?'Groq':'Groq or OpenAI'} key the other checks still run; the report says "words not checked".</p>}
+      {!using&&on&&words&&<p className="muted small">Without a {choice==='auto'?'speech-to-text':STT[choice]?.key} key the other checks still run; the report says "words not checked".</p>}
     </Card>
   </>;
 }
@@ -1027,7 +1036,7 @@ function App(){
       {aiMsg&&<div className="banner info">{aiMsg}{aiSavedAt&&<small className="muted"> · {aiSavedAt.toLocaleTimeString()}</small>}</div>}
       {!ai&&(aiError?<div className="banner error"><span>Couldn't load settings: {aiError}. Retrying automatically…</span><button className="ghost" onClick={loadAI}>Retry now</button></div>:<p className="muted">Loading settings…</p>)}
       {ai&&settingsTab==='providers'&&<>
-        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['check','🎧','Narration check',ai.media?.narrationCheck===false?'Off':ai.media?.narrationCheckWords===false?'On · words off':`On · ${({auto:'auto',groq:'Groq',openai:'OpenAI'})[ai.media?.sttProvider||'auto']}`,0],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'||id==='check'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
+        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['check','🎧','Narration check',ai.media?.narrationCheck===false?'Off':ai.media?.narrationCheckWords===false?'On · words off':`On · ${ai.media?.sttProvider&&ai.media.sttProvider!=='auto'?(STT[ai.media.sttProvider]?.name||ai.media.sttProvider).split(' ')[0]:'auto'}`,0],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'||id==='check'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
         {providerTab==='script'&&<>
         <Card eyebrow="SCRIPT AI" title="Order of providers" actions={<span className="muted small">Main: <b>{providers[ai.activeProvider]?.name||'—'}</b></span>}>
           <p className="muted small">Scripts, script checks, image planning, SEO and trending topics use these providers <b>from top to bottom</b>. Use ↑ ↓ to change the order.</p>

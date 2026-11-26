@@ -26,14 +26,17 @@ const envValue = name => String(process.env[name] || '').trim();
 // Values from .env at start-up, so removing a dashboard key falls back to them.
 const ORIGINAL = Object.fromEntries(Object.values(TEXT_CATALOG).filter(c => c.envField).map(c => [c.envField, env[c.envField] || '']));
 // Image-only values that a dashboard key can replace (Cloudflare images, Pollinations).
-const ORIGINAL_MEDIA = {cloudflareApiToken: env.cloudflareApiToken || '', cloudflareAccountId: env.cloudflareAccountId || '', pollinationsKey: env.pollinationsKey || ''};
+const ORIGINAL_MEDIA = {cloudflareApiToken: env.cloudflareApiToken || '', cloudflareAccountId: env.cloudflareAccountId || '', pollinationsKey: env.pollinationsKey || '', deepgramKey: env.deepgramKey || ''};
 export function originalEnv(field) { return field in ORIGINAL_MEDIA ? ORIGINAL_MEDIA[field] : (ORIGINAL[field] || ''); }
-// Pollinations key saved in Settings → API keys (images only).
-export function pollinationsKeyFrom(settings) {
-  const saved = settings?.secrets?.mediaKeys?.pollinations;
+// Single-key services saved in Settings → API keys: Pollinations (images), Deepgram (narration check).
+export const MEDIA_KEY_FIELDS = {pollinations: 'pollinationsKey', deepgram: 'deepgramKey'};
+export function mediaKeyFrom(settings, id) {
+  const saved = settings?.secrets?.mediaKeys?.[id];
   const key = decryptSecret(saved) || '';
-  return {key: key || ORIGINAL_MEDIA.pollinationsKey, saved: Boolean(key), stored: Boolean(saved), fromEnv: !key && Boolean(ORIGINAL_MEDIA.pollinationsKey)};
+  const original = ORIGINAL_MEDIA[MEDIA_KEY_FIELDS[id]] || '';
+  return {key: key || original, saved: Boolean(key), stored: Boolean(saved), fromEnv: !key && Boolean(original)};
 }
+export const pollinationsKeyFrom = settings => mediaKeyFrom(settings, 'pollinations');
 
 export function textCredentialsFrom(settings) {
   const saved = settings?.secrets?.textKeys || {};
@@ -77,7 +80,7 @@ export function applyTextKeysToEnv(settings) {
   const cf = creds.cloudflare;
   env.cloudflareApiToken = env.cloudflareToken = cf.key || ORIGINAL_MEDIA.cloudflareApiToken;
   env.cloudflareAccountId = cf.accountId || ORIGINAL_MEDIA.cloudflareAccountId;
-  env.pollinationsKey = pollinationsKeyFrom(settings).key;
+  for (const [id, field] of Object.entries(MEDIA_KEY_FIELDS)) env[field] = mediaKeyFrom(settings, id).key;
   return creds;
 }
 // Trims quotes, "Bearer " and spaces that come with copy-paste; rejects obvious non-keys.

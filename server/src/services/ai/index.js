@@ -8,9 +8,9 @@ import { GroqProvider, CerebrasProvider, compatibleProvider, listCompatibleModel
 import { resolvePriority, chainFor, createFallbackProvider } from './textChain.js';
 import { TEXT_CATALOG, COMPATIBLE_PROVIDERS, textCredentialsFrom, textKeyStatus, textConfigured, applyTextKeysToEnv, textKeyUpdate } from './textKeys.js';
 import { ttsCredentialsFrom, ttsKeyStatus, saveTtsKeys } from './ttsKeys.js';
-import { keyList, keyKind, pollinationsKeyUpdate } from './keyCatalog.js';
+import { keyList, keyKind, mediaKeyUpdate } from './keyCatalog.js';
 import { checkCloudflare, checkGemini, checkOpenAI } from './keyChecks.js';
-import { STT_PROVIDERS, testStt } from '../media/narrationCheck.js';
+import { STT_PROVIDERS, testStt, sttKeyStatus } from '../media/narrationCheck.js';
 import { FREE_TTS_DEFAULTS } from '../media/freeTts.js';
 
 export const PROVIDERS = ['gemini', 'groq', 'cerebras', ...COMPATIBLE_PROVIDERS, 'openai', 'mock'];
@@ -138,10 +138,10 @@ function mediaMeta(settings = null) {
     pollinationsSafe: settings?.media?.pollinationsSafe ?? d.media.pollinationsSafe,
     narrationCheck: settings?.media?.narrationCheck !== false,
     narrationCheckWords: settings?.media?.narrationCheckWords !== false,
-    sttProvider: ['auto','groq','openai'].includes(settings?.media?.sttProvider) ? settings.media.sttProvider : 'auto',
+    sttProvider: STT_PROVIDERS[settings?.media?.sttProvider] ? settings.media.sttProvider : 'auto',
     sttModels: settings?.media?.sttModels || {},
     narrationMatchLevel: ['strict','normal','relaxed'].includes(settings?.media?.narrationMatchLevel) ? settings.media.narrationMatchLevel : 'normal',
-    sttKeys: { groq: Boolean(env.groqKey), openai: Boolean(env.openaiKey) }
+    sttKeys: sttKeyStatus(env, sttExtra(settings))
   };
 }
 
@@ -232,7 +232,8 @@ export async function getMediaSettings() {
     pollinationsSafe: media.pollinationsSafe ?? (String(env.pollinationsSafe).toLowerCase()==='true'),
     narrationCheck: media.narrationCheck !== false,
     narrationCheckWords: media.narrationCheckWords !== false,
-    sttProvider: ['auto','groq','openai'].includes(media.sttProvider) ? media.sttProvider : 'auto',
+    sttProvider: STT_PROVIDERS[media.sttProvider] ? media.sttProvider : 'auto',
+    sttExtra: sttExtra(settings),
     sttModels: media.sttModels || {},
     narrationMatchLevel: ['strict','normal','relaxed'].includes(media.narrationMatchLevel) ? media.narrationMatchLevel : 'normal'
   };
@@ -279,7 +280,7 @@ export async function updateAIConfig(patch = {}) {
   if (patch.media?.imageQuality) allowed['media.imageQuality']=patch.media.imageQuality;
   if (patch.media?.ttsModels) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsModels[p]==='string' && patch.media.ttsModels[p].trim()) allowed[`media.ttsModels.${p}`]=patch.media.ttsModels[p].trim();
   if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string') allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim(); // '' = provider default
-  if (['auto','groq','openai'].includes(patch.media?.sttProvider)) allowed['media.sttProvider']=patch.media.sttProvider;
+  if (patch.media?.sttProvider === 'auto' || STT_PROVIDERS[patch.media?.sttProvider]) allowed['media.sttProvider']=patch.media.sttProvider;
   if (['strict','normal','relaxed'].includes(patch.media?.narrationMatchLevel)) allowed['media.narrationMatchLevel']=patch.media.narrationMatchLevel;
   if (patch.media?.sttModels) for (const p of Object.keys(STT_PROVIDERS)) if (STT_PROVIDERS[p].models.includes(patch.media.sttModels[p])) allowed[`media.sttModels.${p}`]=patch.media.sttModels[p];
   for (const k of ['generationEnabled','mockMode','pollinationsSafe','narrationCheck','narrationCheckWords']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
@@ -363,7 +364,7 @@ export async function saveKey(id, input = {}) {
   if (kind === 'text') await saveTextKey(id, { key: input.key, clear, accountId: input.accountId, baseUrl: input.baseUrl });
   else if (kind === 'tts') await saveTtsKeys({ [id]: clear ? { clear: true } : { key: input.key, ...(typeof input.region === 'string' ? { region: input.region } : {}), ...(typeof input.url === 'string' ? { url: input.url } : {}) } });
   else {
-    const { set, unset } = pollinationsKeyUpdate({ key: input.key, clear });
+    const { set, unset } = mediaKeyUpdate(id, { key: input.key, clear });
     const update = { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) };
     if (Object.keys(update).length) await AISettings.updateOne({ key: 'global' }, update, { upsert: true });
   }
@@ -438,9 +439,14 @@ export async function setMediaPriority(type, { order, fallbackEnabled } = {}) {
   return getAISettings();
 }
 
+// Keys the narration check can use that live with the voice keys (AI Awaaz, ElevenLabs).
+function sttExtra(settings) {
+  const c = ttsCredentialsFrom(settings);
+  return { aiawaaz: c.aiawaaz?.key ? { url: c.aiawaaz.url, apiKey: c.aiawaaz.key } : null, elevenlabsKey: c.elevenlabs?.key || '' };
+}
 // Settings → AI providers → Narration check → Test.
 export async function testSpeechToText(input = {}) {
   const settings = await getGlobalSettings();
   const m = settings?.media || {};
-  return testStt(env, { choice: input.provider || m.sttProvider || 'auto', models: { ...(m.sttModels || {}), ...(input.model && input.provider ? { [input.provider]: input.model } : {}) } });
+  return testStt(env, { choice: input.provider || m.sttProvider || 'auto', models: { ...(m.sttModels || {}), ...(input.model && input.provider ? { [input.provider]: input.model } : {}) }, ...sttExtra(settings) });
 }

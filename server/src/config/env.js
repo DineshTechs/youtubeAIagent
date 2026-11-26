@@ -89,6 +89,7 @@ export const env = {
   // Pollinations supports the current authenticated API and a legacy public image endpoint.
   // Leave the key empty to use the public endpoint; it may be rate-limited.
   pollinationsKey: process.env.POLLINATIONS_API_KEY || '',
+  deepgramKey: process.env.DEEPGRAM_API_KEY || '',
   pollinationsImageModel: process.env.POLLINATIONS_IMAGE_MODEL || 'flux',
   pollinationsSafe: process.env.POLLINATIONS_SAFE || 'false',
   stabilityKey: process.env.STABILITY_API_KEY || '',

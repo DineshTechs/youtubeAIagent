@@ -271,3 +271,54 @@ async function describeWith(client,tools,language){
   }
   return {tools:tools.map(t=>({name:t.name,description:String(t.description||'').slice(0,200),arguments:props(t)})),ttsTool:tts?.name||null,voicesTool:voicesTool?.name||null,enhanceTool:findEnhanceTool(tools)?.name||null,account,voices};
 }
+
+// ---- Speech-to-text over the same MCP connection (used by the narration check) ----
+// The tool that turns audio into text: its name/description says transcribe or
+// speech-to-text, and it takes the audio itself (base64) rather than only a link.
+export function findSttTool(tools=[]){
+  const score=t=>{const n=`${t.name} ${t.description||''}`.toLowerCase();const p=props(t);let s=0;
+    if(/transcri|speech[_\s-]?to[_\s-]?text|\bstt\b|recogni[sz]e[_\s-]?speech|audio[_\s-]?to[_\s-]?text/.test(n))s+=5;
+    if(pick(p,/audio|file|data|base64|url/i))s+=2;
+    if(/text[_\s-]?to[_\s-]?speech|\btts\b|generate[_\s-]?(speech|audio)|list|voices?$/.test(t.name.toLowerCase()))s-=6;
+    return s;};
+  return [...tools].sort((a,b)=>score(b)-score(a)).find(t=>score(t)>=5)||null;
+}
+const B64_KEY=/^(audio|audio_?(base64|b64|data|content|bytes)|file|file_?(base64|b64|data|content)|data|content|base64|input_?audio)$/i;
+export function buildSttArgs(tool,{audioBase64,fileName='scene.mp3',language}){
+  const schema=tool.inputSchema?.properties||{};const p=props(tool);const args={};
+  const b64=pick(p,B64_KEY);
+  if(!b64){const urlKey=pick(p,/url|link/i);throw new McpError(`its speech-to-text tool "${tool.name}" only accepts ${urlKey?`a link (${urlKey})`:'other input'}, not the audio file itself, so it can't check narration made on this server.`);}
+  const t=schema[b64]||{};
+  args[b64]=/data[_\s-]?url|data:/.test(String(t.description||'').toLowerCase())?`data:audio/mpeg;base64,${audioBase64}`:audioBase64;
+  const mime=pick(p,/^(mime_?type|content_?type|media_?type)$/i);if(mime)args[mime]='audio/mpeg';
+  const fmt=pick(p,/^(format|audio_?format|encoding|file_?type|extension)$/i);if(fmt){const en=schema[fmt]?.enum;args[fmt]=!en||en.includes('mp3')?'mp3':en[0];}
+  const name=pick(p,/^(file_?name|filename|name)$/i);if(name)args[name]=fileName;
+  const lang=pick(p,/^(language|lang|language_?code|locale|source_?language)$/i);if(lang&&language)args[lang]=language;
+  return args;
+}
+export function textFromSttResult(result){
+  const sc=result?.structuredContent;
+  const fromObj=o=>o&&typeof o==='object'?(o.text??o.transcript??o.transcription??o.result?.text??(Array.isArray(o.segments)?o.segments.map(s=>s.text).join(' '):undefined)):undefined;
+  let t=fromObj(sc);
+  if(typeof t!=='string'){const raw=textOf(result);try{const j=JSON.parse(raw);t=typeof j==='string'?j:fromObj(j);}catch{t=raw;}}
+  if(result?.isError)throw new McpError(String(t||'speech-to-text failed'));
+  return String(t||'').trim();
+}
+export async function mcpTranscribe({url,apiKey,audio,fileName,language,sleep,gapMs},fetchImpl=fetch){
+  if(!apiKey)throw new McpError('add your AI Awaaz API key in Settings → API keys.',401);
+  return withSession({url,apiKey,sleep,gapMs},fetchImpl,async({client,tools})=>{
+    const tool=findSttTool(tools);
+    if(!tool)throw new McpError(`no speech-to-text tool found. The server offers: ${tools.map(t=>t.name).join(', ')||'no tools'}.`);
+    return textFromSttResult(await client.callTool(tool.name,buildSttArgs(tool,{audioBase64:Buffer.from(audio).toString('base64'),fileName,language})));
+  });
+}
+// For Settings → Narration check → Test: which tool would be used and how.
+export async function mcpSttInfo({url,apiKey,sleep,gapMs},fetchImpl=fetch){
+  if(!apiKey)throw new McpError('add your AI Awaaz API key in Settings → API keys.',401);
+  return withSession({url,apiKey,sleep,gapMs},fetchImpl,async({tools})=>{
+    const tool=findSttTool(tools);
+    if(!tool)throw new McpError(`no speech-to-text tool found. The server offers: ${tools.map(t=>t.name).join(', ')||'no tools'}.`);
+    const args=buildSttArgs(tool,{audioBase64:'AAAA',language:'hi'});
+    return {tool:tool.name,audioField:Object.keys(args).find(k=>args[k]==='AAAA'||String(args[k]).endsWith('AAAA')),fields:props(tool)};
+  });
+}

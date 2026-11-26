@@ -14,7 +14,7 @@ const byId = (list, id) => list.find(k => k.id === id);
 test('every key the app uses is listed once, with what it is used for', () => {
   const list = keyList({});
   assert.deepEqual(list.map(k => k.id).sort(), [...KEY_IDS].sort());
-  assert.deepEqual(byId(list, 'cloudflare').usedFor, ['Scripts', 'Images']);
+  assert.deepEqual(byId(list, 'cloudflare').usedFor, ['Scripts', 'Images', 'Narration check']);
   assert.ok(byId(list, 'cloudflare').fields.some(f => f.name === 'accountId'));
   assert.ok(byId(list, 'azure').fields.some(f => f.name === 'region'));
   assert.equal(keyKind('pollinations'), 'media');

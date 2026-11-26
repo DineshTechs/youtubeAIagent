@@ -33,7 +33,7 @@ test('cut, too long, wrong words and mixed voices fail; a good scene passes', ()
   assert.match(r.issues.join('\n'), /Scene 3 narration does not say its text \(match \d+%\)\. Heard: “आज हम/);
   assert.match(r.issues.join('\n'), /Narration uses 2 different voices/);
   assert.match(r.issues.join('\n'), /Scene 5 narration audio file is missing/);
-  assert.match(r.summary, /words not checked: add a Groq/);
+  assert.match(r.summary, /words not checked: add a speech-to-text key/);
 });
 
 test('Autopilot holds a video whose narration check failed (and can be told not to)', () => {
@@ -117,4 +117,87 @@ test('speech-to-text choice, model and strictness', async () => {
   await assert.rejects(testStt({groqKey: 'g'}, {}, async () => new Response('{"error":{"message":"Invalid API Key"}}', {status: 401})), /rejected the key \(401\): Invalid API Key/);
   await assert.rejects(testStt({}, {choice: 'groq'}), /No Groq key/);
   assert.ok(STT_PROVIDERS.groq.free);
+});
+
+import {findSttTool, buildSttArgs, textFromSttResult, mcpTranscribe, resetMcpSessions} from '../src/services/media/mcpTts.js';
+const sttTool = {name: 'transcribe_audio', description: 'Speech to text: transcribe an audio file', inputSchema: {type: 'object', properties: {audio_base64: {type: 'string'}, file_name: {type: 'string'}, language: {type: 'string'}}}};
+const ttsTool = {name: 'generate_speech', description: 'text to speech', inputSchema: {type: 'object', properties: {text: {type: 'string'}, voice: {type: 'string'}}}};
+test('AI Awaaz speech-to-text tool is found and filled in', () => {
+  assert.equal(findSttTool([ttsTool, {name: 'list_voices', inputSchema: {}}, sttTool]).name, 'transcribe_audio');
+  assert.equal(findSttTool([ttsTool]), null);
+  assert.deepEqual(buildSttArgs(sttTool, {audioBase64: 'QUJD', fileName: 'scene-001.mp3', language: 'hi'}), {audio_base64: 'QUJD', file_name: 'scene-001.mp3', language: 'hi'});
+  assert.throws(() => buildSttArgs({name: 'transcribe', inputSchema: {properties: {audio_url: {type: 'string'}}}}, {audioBase64: 'x'}), /only accepts a link \(audio_url\)/);
+  assert.equal(textFromSttResult({structuredContent: {transcript: 'नमस्ते दोस्तों'}}), 'नमस्ते दोस्तों');
+  assert.equal(textFromSttResult({content: [{type: 'text', text: '{"text":"hello there"}'}]}), 'hello there');
+  assert.equal(textFromSttResult({content: [{type: 'text', text: 'plain words'}]}), 'plain words');
+  assert.throws(() => textFromSttResult({isError: true, content: [{type: 'text', text: 'Insufficient credits'}]}), /Insufficient credits/);
+});
+test('auto order is Groq, then AI Awaaz, then OpenAI; AI Awaaz can be chosen', () => {
+  const a = {url: 'https://app.aiawaaz.io/api/mcp', apiKey: 'ak'};
+  assert.equal(sttProviderFrom({openaiKey: 'o'}, {aiawaaz: a}).id, 'aiawaaz');
+  assert.equal(sttProviderFrom({groqKey: 'g', openaiKey: 'o'}, {aiawaaz: a}).id, 'groq');
+  assert.equal(sttProviderFrom({groqKey: 'g'}, {choice: 'aiawaaz', aiawaaz: a}).id, 'aiawaaz');
+  assert.equal(sttProviderFrom({groqKey: 'g'}, {choice: 'aiawaaz'}), null);
+});
+test('narration words checked through AI Awaaz MCP', async () => {
+  resetMcpSessions();
+  const calls = [];
+  const reply = (id, result) => new Response(JSON.stringify({jsonrpc: '2.0', id, result}), {status: 200, headers: {'content-type': 'application/json'}});
+  const fake = async (_u, init) => {
+    const b = JSON.parse(init.body);
+    if (b.method === 'initialize') return reply(b.id, {protocolVersion: '2025-06-18', capabilities: {}});
+    if (!b.id) return new Response('', {status: 202});
+    if (b.method === 'tools/list') return reply(b.id, {tools: [ttsTool, sttTool]});
+    calls.push(b.params);
+    return reply(b.id, {structuredContent: {text: hi}});
+  };
+  const text = await mcpTranscribe({url: 'https://stt-test.aiawaaz.io/api/mcp', apiKey: 'ak', audio: Buffer.from('ID3fakeaudio'), fileName: 'scene-001.mp3', language: 'hi', sleep: async () => {}, gapMs: 0}, fake);
+  assert.equal(text, hi);
+  assert.equal(calls[0].name, 'transcribe_audio');
+  assert.equal(calls[0].arguments.audio_base64, Buffer.from('ID3fakeaudio').toString('base64'));
+  assert.equal(calls[0].arguments.language, 'hi');
+});
+
+import {AUTO_ORDER, transcribe, sttKeyStatus} from '../src/services/media/narrationCheck.js';
+test('more speech-to-text services: each sends the scene audio its own way', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'stt-'));
+  const f = path.join(dir, 'scene-001.mp3'); await fs.writeFile(f, Buffer.from('ID3-fake-mp3'));
+  const env = {groqKey: 'g', cloudflareApiToken: 'cft', cloudflareAccountId: 'a'.repeat(32), geminiKey: 'gk', deepgramKey: 'dk', openaiKey: 'o'};
+  const seen = [];
+  const fake = async (url, init = {}) => {
+    seen.push({url, init});
+    if (url.includes('cloudflare.com')) return new Response(JSON.stringify({success: true, result: {text: 'cf text'}}), {status: 200});
+    if (url.includes('generativelanguage')) return new Response(JSON.stringify({candidates: [{content: {parts: [{text: 'gemini text'}]}}]}), {status: 200});
+    if (url.includes('deepgram')) return new Response(JSON.stringify({results: {channels: [{alternatives: [{transcript: 'dg text'}]}]}}), {status: 200});
+    if (url.includes('elevenlabs')) return new Response(JSON.stringify({text: 'el text'}), {status: 200});
+    return new Response(JSON.stringify({text: 'whisper text'}), {status: 200});
+  };
+  const run = async id => transcribe(f, {provider: sttProviderFrom(env, {choice: id, elevenlabsKey: 'ek'}), language: 'Hindi'}, fake);
+  assert.equal(await run('cloudflare'), 'cf text');
+  assert.match(seen.at(-1).url, /accounts\/a{32}\/ai\/run\/@cf\/openai\/whisper-large-v3-turbo$/);
+  assert.equal(JSON.parse(seen.at(-1).init.body).audio, Buffer.from('ID3-fake-mp3').toString('base64'));
+  assert.equal(JSON.parse(seen.at(-1).init.body).language, 'hi');
+  assert.equal(await run('gemini'), 'gemini text');
+  assert.match(seen.at(-1).url, /models\/gemini-2\.5-flash:generateContent\?key=gk$/);
+  assert.match(JSON.parse(seen.at(-1).init.body).contents[0].parts[1].text, /Hindi \(Devanagari script\)/);
+  assert.equal(await run('deepgram'), 'dg text');
+  assert.match(seen.at(-1).url, /model=nova-2&smart_format=true&language=hi$/);
+  assert.equal(seen.at(-1).init.headers.Authorization, 'Token dk');
+  assert.equal(await run('elevenlabs'), 'el text');
+  assert.equal(seen.at(-1).init.body.get('model_id'), 'scribe_v1');
+  assert.equal(await run('groq'), 'whisper text');
+  assert.equal(seen.at(-1).url, 'https://api.groq.com/openai/v1/audio/transcriptions');
+  assert.deepEqual(AUTO_ORDER.slice(0, 3), ['groq', 'cloudflare', 'gemini'], 'free services first');
+  assert.equal(sttProviderFrom({geminiKey: 'gk', openaiKey: 'o'}).id, 'gemini');
+  assert.deepEqual(sttKeyStatus({geminiKey: 'x'}, {elevenlabsKey: 'e'}), {groq: false, cloudflare: false, gemini: true, deepgram: false, aiawaaz: false, elevenlabs: true, openai: false});
+  await fs.rm(dir, {recursive: true, force: true});
+});
+test('key tests for the new services', async () => {
+  const ok = async () => new Response(JSON.stringify({models: [{name: 'models/gemini-2.5-flash'}], result: [{name: '@cf/openai/whisper-large-v3-turbo'}], success: true, projects: []}), {status: 200});
+  assert.match((await testStt({geminiKey: 'g'}, {choice: 'gemini'}, ok)).message, /Gemini works with gemini-2\.5-flash/);
+  await assert.rejects(testStt({geminiKey: 'g'}, {choice: 'gemini', models: {gemini: 'gemini-2.0-flash'}}, ok), /not available/);
+  assert.match((await testStt({cloudflareApiToken: 't', cloudflareAccountId: 'a'.repeat(32)}, {choice: 'cloudflare'}, ok)).message, /Cloudflare Workers AI Whisper works/);
+  assert.match((await testStt({deepgramKey: 'd'}, {choice: 'deepgram'}, ok)).message, /Deepgram works with nova-2/);
+  await assert.rejects(testStt({deepgramKey: 'd'}, {choice: 'deepgram'}, async () => new Response('{"err_msg":"Invalid credentials."}', {status: 401})), /Deepgram rejected the key \(401\): Invalid credentials/);
+  await assert.rejects(testStt({}, {choice: 'cloudflare'}), /No Cloudflare key/);
 });
