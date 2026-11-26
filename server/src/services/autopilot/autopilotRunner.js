@@ -5,7 +5,8 @@ import Series from '../../models/Series.js';
 import Video from '../../models/Video.js';
 import GenerationJob from '../../models/GenerationJob.js';
 import AutopilotRun from '../../models/AutopilotRun.js';
-import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,heldMessage,UNPUBLISHED_STATUSES,SKIPPABLE_STATUSES} from './autopilotRules.js';
+import {normalizeAutopilot,dueSlots,autopilotProblems,uploadRequest,pickBlocker,waitingDecision,waitingMessage,heldMessage,UNPUBLISHED_STATUSES,SKIPPABLE_STATUSES,needsNewSlot,heldDecision} from './autopilotRules.js';
+import {nextFreeSlot} from './publishSlots.js';
 import {internalApi} from '../telegram/botRunner.js';
 import {notify} from '../telegram/notifier.js';
 import {readiness} from '../youtube/youtubeAccount.js';
@@ -84,6 +85,20 @@ async function advanceWaiting(run,series,settings,now){
   }
   if(String(d.videoId||'')!==String(run.waitingForVideoId||''))await note(run,{waitingForVideoId:d.videoId||null});
 }
+// A video Autopilot held for review: follow what you did with it.
+async function advanceHeld(run,series,settings,now){
+  const video=await Video.findById(run.videoId).select('status skippedAt statusHistory updatedAt title').lean();
+  const holder=video?await AutopilotRun.findOne({seriesId:series._id,videoId:run.videoId,status:{$in:['APPROVED','SCHEDULED','PUBLISHED']},_id:{$ne:run._id}}).select('slotAt').lean():null;
+  const approvedAt=video?.status==='APPROVED'?([...(video.statusHistory||[])].reverse().find(h=>h.status==='APPROVED')?.at||video.updatedAt):null;
+  const d=heldDecision({video,heldBy:holder?slotLabel(holder.slotAt,settings.timezone):null,now,approvedAt});
+  if(d.action==='close')return note(run,{status:d.status,error:null,nextActionAt:null},d.message);
+  if(d.action!=='book')return;
+  const slot=await moveToFreeSlot(run,series,settings,now,'You approved the held video.');
+  if(!slot)return note(run,{nextActionAt:new Date(now.getTime()+30*60000)},'Approved, but there is no free slot in the next days; trying again in 30 minutes.');
+  await note(run,{status:'APPROVED',error:null,nextActionAt:null});
+  notify('autopilot',{profileId:String(series._id),profileName:series.name,videoId:String(run.videoId),title:`Autopilot: approved video scheduled`,message:`"${video.title||'Video'}" goes public at ${slotLabel(slot,settings.timezone)} (the next free time). It is uploaded now as private until then.`});
+}
+
 // "Make a new video anyway" (dashboard or Telegram) for a waiting slot.
 export async function generateAnyway(runId){
   const run=await AutopilotRun.findById(runId).lean();
@@ -135,9 +150,32 @@ async function advanceGenerating(run,series,settings){
   if(job.status==='COMPLETED'&&video)return problem(run,series,'NEEDS_ATTENTION',heldMessage([`The video ended as "${String(video.status).toLowerCase().replace(/_/g,' ')}" instead of ready, so it needs your decision.`]));
 }
 
-async function advanceApproved(run,series,settings){
+// The next slot time no other run or scheduled video uses.
+async function freeSlotFor(series,settings,now,exceptRunId){
+  const [runs,videos]=await Promise.all([
+    AutopilotRun.find({seriesId:series._id,slotAt:{$gte:now},status:{$nin:['FAILED','SKIPPED','MOVED']},_id:{$ne:exceptRunId}}).select('slotAt').lean(),
+    Video.find({seriesId:series._id,status:'SCHEDULED',scheduledAt:{$gte:now}}).select('scheduledAt').lean()
+  ]);
+  return nextFreeSlot(settings,[...runs.map(r=>r.slotAt),...videos.map(v=>v.scheduledAt)],now);
+}
+// Moves a run to the next free slot. Returns the new slot, or null if none / taken meanwhile.
+async function moveToFreeSlot(run,series,settings,now,why){
+  const slot=await freeSlotFor(series,settings,now,run._id);
+  if(!slot)return null;
+  try{await note(run,{slotAt:slot},`${why} Moved to the next free time: ${slotLabel(slot,settings.timezone)}.`);}
+  catch(e){if(e?.code===11000)return null;throw e;}
+  return slot;
+}
+
+async function advanceApproved(run,series,settings,now=new Date()){
   const videoId=run.videoId;
   if(!videoId)return problem(run,series,'FAILED','No video to upload.');
+  // Missed its own time (slow generation, approved late)? Keep the pattern: next free slot.
+  if(needsNewSlot(run,settings,now)){
+    const slot=await moveToFreeSlot(run,series,settings,now,`The video was ready after its time (${slotLabel(run.slotAt,settings.timezone)}).`);
+    if(slot)run={...run,slotAt:slot};
+    else await note(run,{error:null},'No free slot in the next days; uploading now instead.');
+  }
   // Booked times always go public at that time (private until then); others follow Autopilot visibility.
   const body=run.booked?(new Date(run.slotAt).getTime()-Date.now()>=10*60000?{publishAt:new Date(run.slotAt).toISOString()}:{}):run.manual?{privacyStatus:settings.visibility}:uploadRequest(run.slotAt,settings);
   try{
@@ -170,7 +208,9 @@ export async function tick(now=new Date()){
         }catch(e){console.error('Autopilot create failed:',e.message);}
       }
     }
-    const runs=await AutopilotRun.find({status:{$in:['WAITING','GENERATING','APPROVED']},$or:[{nextActionAt:null},{nextActionAt:{$lte:now}}]}).lean();
+    // Waiting slots first, so a slot that waits for a video takes it before anything else does.
+    const order={WAITING:0,NEEDS_ATTENTION:1,GENERATING:2,APPROVED:3};
+    const runs=(await AutopilotRun.find({$and:[{$or:[{status:{$in:['WAITING','GENERATING','APPROVED']}},{status:'NEEDS_ATTENTION',videoId:{$ne:null},slotAt:{$gte:new Date(now.getTime()-14*86400000)}}]},{$or:[{nextActionAt:null},{nextActionAt:{$lte:now}}]}]}).lean()).sort((a,b)=>order[a.status]-order[b.status]);
     for(const run of runs){
       try{
         const series=await Series.findById(run.seriesId).select('name autopilot uploadSettings archived').lean();
@@ -178,7 +218,8 @@ export async function tick(now=new Date()){
         const settings=settingsFor(series);
         if(run.status==='WAITING')await advanceWaiting(run,series,settings,now);
         else if(run.status==='GENERATING')await advanceGenerating(run,series,settings);
-        else if(run.status==='APPROVED')await advanceApproved(run,series,settings);
+        else if(run.status==='NEEDS_ATTENTION')await advanceHeld(run,series,settings,now);
+        else if(run.status==='APPROVED')await advanceApproved(run,series,settings,now);
       }catch(e){console.error(`Autopilot run ${run._id} failed:`,e.message);await note(run,{error:e.message},`Error: ${e.message}`).catch(()=>{});}
     }
   }catch(e){console.error('Autopilot tick failed:',e.message);}

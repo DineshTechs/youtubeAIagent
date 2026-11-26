@@ -116,8 +116,32 @@ export function waitingMessage(blocker,slotLabel){
 // The Telegram text for a video Autopilot did not publish: every reason, then what to do.
 export function heldMessage(issues){
   const list=issues.map(i=>`• ${i}`).join('\n');
-  return `Not published automatically, because:\n${list}\n\nWatch it, then approve it to publish it at the next time (or fix the scenes first).`;
+  return `Not published automatically, because:\n${list}\n\nWatch it, then approve it: it goes public at the next free slot time (or pick your own time from the video card within 5 minutes). You can also fix the scenes, skip or delete it.`;
 }
 
 // Videos the user can skip (not approved / not wanted): Autopilot stops waiting for them.
 export const SKIPPABLE_STATUSES=['SCENE_REVIEW','AWAITING_APPROVAL','APPROVED'];
+
+// ---- Keeping uploads on the slot times --------------------------------------
+// Every Autopilot video goes public exactly at one of the slot times. A video that is
+// not ready by its own slot (slow generation, approved late, held for review) moves to
+// the next free slot; that slot then makes no extra video, so it stays one video per slot.
+export const MIN_SCHEDULE_MINUTES=10;
+export function needsNewSlot(run,settings,now=new Date()){
+  if(run.manual||run.booked||settings.visibility!=='public')return false;
+  return new Date(run.slotAt).getTime()-now.getTime()<MIN_SCHEDULE_MINUTES*60000;
+}
+// A held (NEEDS_ATTENTION) video: what to do now that it may have been approved, skipped,
+// deleted or published by you. approvedAt = when it was approved (gives you 5 minutes to
+// pick your own time in Telegram first).
+export const AUTO_BOOK_DELAY_MINUTES=5;
+export function heldDecision({video,heldBy=null,now=new Date(),approvedAt=null}){
+  if(!video)return {action:'close',status:'SKIPPED',message:'The video was deleted.'};
+  if(video.skippedAt&&video.status!=='APPROVED')return {action:'close',status:'SKIPPED',message:'You skipped this video.'};
+  if(['SCHEDULED','PUBLISHED'].includes(video.status))return {action:'close',status:video.status,message:'Published outside Autopilot.'};
+  if(['FAILED','CANCELLED'].includes(video.status))return {action:'close',status:'FAILED',message:`The video is ${video.status.toLowerCase()}.`};
+  if(video.status!=='APPROVED')return {action:'wait'};
+  if(heldBy)return {action:'close',status:'MOVED',message:`Published in another slot instead (${heldBy}).`};
+  if(approvedAt&&now.getTime()-new Date(approvedAt).getTime()<AUTO_BOOK_DELAY_MINUTES*60000)return {action:'wait'};
+  return {action:'book'};
+}

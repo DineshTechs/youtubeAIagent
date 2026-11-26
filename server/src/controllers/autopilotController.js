@@ -39,7 +39,7 @@ export async function makeAnyway(req,res){try{
 // ---- Booking a publish time for a finished video ----
 async function takenTimes(seriesId,now){
   const [runs,videos]=await Promise.all([
-    AutopilotRun.find({seriesId,slotAt:{$gte:now},status:{$nin:['FAILED','SKIPPED']}}).select('slotAt').lean(),
+    AutopilotRun.find({seriesId,slotAt:{$gte:now},status:{$nin:['FAILED','SKIPPED','MOVED']}}).select('slotAt').lean(),
     Video.find({seriesId,status:'SCHEDULED',scheduledAt:{$gte:now}}).select('scheduledAt').lean()
   ]);
   return [...runs.map(r=>r.slotAt),...videos.map(v=>v.scheduledAt)];
@@ -70,6 +70,10 @@ export async function bookVideo(req,res){try{
   if(at.getTime()<now.getTime()+10*60000)return res.status(400).json({error:'Pick a time at least 15 minutes from now.'});
   if(taken.some(t=>Math.abs(new Date(t).getTime()-at.getTime())<60000))return res.status(409).json({error:`${formatWhen(at,settings.timezone)} is already used by another video. Pick another time.`});
   const label=formatWhen(at,settings.timezone);
+  const holder=await AutopilotRun.findOne({videoId:v._id,status:{$in:['APPROVED','SCHEDULED','PUBLISHED']}}).select('slotAt status').lean();
+  if(holder)return res.status(409).json({error:`This video is already ${holder.status==='APPROVED'?'booked':'scheduled'} for ${formatWhen(holder.slotAt,settings.timezone)}.`});
+  // A slot that held this video for review is replaced by your booking.
+  await AutopilotRun.updateMany({videoId:v._id,status:'NEEDS_ATTENTION'},{$set:{status:'MOVED',error:null},$push:{log:{at:new Date(),message:`You booked it yourself for ${label}.`}}});
   try{await AutopilotRun.create({seriesId:s._id,slotAt:at,status:'APPROVED',videoId:v._id,booked:true,log:[{message:`Booked "${v.title}" to go public at ${label}.`}]});}
   catch(e){if(e?.code===11000)return res.status(409).json({error:`${label} is already used by another video. Pick another time.`});throw e;}
   res.status(201).json({ok:true,slotAt:at.toISOString(),label,timezone:settings.timezone});

@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 const schema=new mongoose.Schema({
   seriesId:{type:mongoose.Schema.Types.ObjectId,ref:'Series',required:true},
   slotAt:{type:Date,required:true},
-  status:{type:String,enum:['WAITING','GENERATING','APPROVED','SCHEDULED','PUBLISHED','NEEDS_ATTENTION','FAILED','SKIPPED'],default:'GENERATING'},
+  status:{type:String,enum:['WAITING','GENERATING','APPROVED','SCHEDULED','PUBLISHED','NEEDS_ATTENTION','MOVED','FAILED','SKIPPED'],default:'GENERATING'},
   manual:{type:Boolean,default:false},
   // Booked by you (Telegram/dashboard) for this time: uploaded and scheduled to go public then.
   booked:{type:Boolean,default:false},

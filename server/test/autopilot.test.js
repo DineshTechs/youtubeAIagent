@@ -127,11 +127,33 @@ test('a held video lists every reason, including which checks failed', () => {
   assert.match(issues[2], /Scene 3 image may not match the narration/);
   const m = heldMessage(issues);
   assert.match(m, /^Not published automatically, because:\n• Quality check failed/);
-  assert.match(m, /approve it to publish it/);
+  assert.match(m, /approve it: it goes public at the next free slot time/);
 });
 
 test('a skipped video no longer holds up the next one', () => {
   const v = {_id: 'b', title: 'Not wanted', status: 'AWAITING_APPROVAL', createdAt: ago(10)};
   assert.equal(pickBlocker({videos: [v]}).videoId, 'b');
   assert.equal(pickBlocker({videos: [{...v, skippedAt: new Date()}]}), null);
+});
+
+import {needsNewSlot, heldDecision} from '../src/services/autopilot/autopilotRules.js';
+test('an upload that missed its slot time moves to a new slot (public videos only)', () => {
+  const now = new Date('2026-12-01T08:00:00Z');
+  const pub = normalizeAutopilot({});
+  assert.equal(needsNewSlot({slotAt: new Date('2026-12-01T07:00:00Z')}, pub, now), true, 'slot passed');
+  assert.equal(needsNewSlot({slotAt: new Date('2026-12-01T08:05:00Z')}, pub, now), true, 'too close to schedule');
+  assert.equal(needsNewSlot({slotAt: new Date('2026-12-01T09:00:00Z')}, pub, now), false);
+  assert.equal(needsNewSlot({slotAt: new Date('2026-12-01T07:00:00Z'), booked: true}, pub, now), false, 'your own booked time is kept');
+  assert.equal(needsNewSlot({slotAt: new Date('2026-12-01T07:00:00Z'), manual: true}, pub, now), false, '"Run once now" uploads at once');
+  assert.equal(needsNewSlot({slotAt: new Date('2026-12-01T07:00:00Z')}, normalizeAutopilot({visibility: 'unlisted'}), now), false);
+});
+test('a held video follows what you did with it', () => {
+  const now = new Date('2026-12-01T10:00:00Z');
+  assert.equal(heldDecision({video: null}).status, 'SKIPPED');
+  assert.equal(heldDecision({video: {status: 'AWAITING_APPROVAL'}}).action, 'wait');
+  assert.equal(heldDecision({video: {status: 'AWAITING_APPROVAL', skippedAt: now}}).status, 'SKIPPED');
+  assert.equal(heldDecision({video: {status: 'SCHEDULED'}}).status, 'SCHEDULED');
+  assert.equal(heldDecision({video: {status: 'APPROVED'}, heldBy: '1 Dec, 7:30 pm'}).status, 'MOVED');
+  assert.equal(heldDecision({video: {status: 'APPROVED'}, now, approvedAt: new Date('2026-12-01T09:58:00Z')}).action, 'wait', '5 minutes to pick your own time');
+  assert.equal(heldDecision({video: {status: 'APPROVED'}, now, approvedAt: new Date('2026-12-01T09:50:00Z')}).action, 'book');
 });

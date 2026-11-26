@@ -460,3 +460,4 @@ button.small{padding:5px 10px;font-size:12.5px}
 .toggle.disabled{opacity:.5;pointer-events:none}
 .formGrid.dim{opacity:.55}
 .dim{opacity:.55;pointer-events:none}
+.pill.run-moved{background:var(--panel2,#272727);color:var(--muted,#aaa)}
