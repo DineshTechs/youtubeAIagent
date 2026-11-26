@@ -138,7 +138,8 @@ async function advanceGenerating(run,series,settings){
 async function advanceApproved(run,series,settings){
   const videoId=run.videoId;
   if(!videoId)return problem(run,series,'FAILED','No video to upload.');
-  const body=run.manual?{privacyStatus:settings.visibility}:uploadRequest(run.slotAt,settings);
+  // Booked times always go public at that time (private until then); others follow Autopilot visibility.
+  const body=run.booked?(new Date(run.slotAt).getTime()-Date.now()>=10*60000?{publishAt:new Date(run.slotAt).toISOString()}:{}):run.manual?{privacyStatus:settings.visibility}:uploadRequest(run.slotAt,settings);
   try{
     const r=await internalApi('POST',`/youtube/publish/${videoId}`,body);
     await note(run,{status:r.status==='SCHEDULED'?'SCHEDULED':'PUBLISHED',youtubeVideoId:r.youtubeVideoId,error:null,nextActionAt:null},r.status==='SCHEDULED'?`Uploaded; goes public at ${slotLabel(run.slotAt,settings.timezone)} (${r.url}).`:`Uploaded as ${r.privacyStatus||body.privacyStatus} (${r.url}).`);

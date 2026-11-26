@@ -4,6 +4,7 @@
 //   api:   (method,path,body) => JSON from this app's own REST API (same rules as the dashboard)
 //   scope: (chatId) => [{id,name,scheduleTime}] profiles on this bot that allow commands from this chat
 import {randomBytes} from 'node:crypto';
+import {parseWhen,formatWhen} from '../autopilot/publishSlots.js';
 import {esc} from './telegramFormat.js';
 
 const STATUS={QUEUED:'Queued',PLANNED:'Planned',SCRIPT_GENERATED:'Script ready',SCRIPT_QA:'Script QA',ASSETS_GENERATING:'Making images',VIDEO_RENDERING:'Rendering',VIDEO_QA:'Video QA',SCENE_REVIEW:'🎞 Scene review',AWAITING_APPROVAL:'⏳ Awaiting approval',APPROVED:'✅ Approved',UPLOADING:'Uploading',SCHEDULED:'🗓 Scheduled',PUBLISHED:'📺 Published',FAILED:'❌ Failed',CANCELLED:'⏹ Cancelled'};
@@ -66,7 +67,8 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
     if(v.status==='SCENE_REVIEW'){const n=v.pendingSceneEdit?.sceneNumber;rows.push([{text:'✅ Render video',callback_data:`r:${id}`},...(n?[{text:`👁 See new scene ${n}`,callback_data:`e:${id}:${n}`}]:[])]);}
     if(v.status==='AWAITING_APPROVAL')rows.push([b('✅ Approve','approve')]);
     if(SKIPPABLE.has(v.status))rows.push([v.skippedAt?b('↩ Undo skip','unskip'):b('⏭ Skip (don’t wait for it)','skip')]);
-    if(['APPROVED','UPLOADING'].includes(v.status))rows.push([b('📺 Upload now','upload'),...(profile?.scheduleTime?[b(`🗓 Schedule ${profile.scheduleTime}`,'schedule')]:[])]);
+    if(v.status==='APPROVED')rows.push([b('🗓 Next free slot','booknext'),b('🕒 Pick a time','picktime')],[b('📺 Upload now','upload')]);
+    else if(v.status==='UPLOADING')rows.push([b('📺 Upload now','upload')]);
     if(['FAILED','CANCELLED'].includes(v.status)&&!active)rows.push([b('🔁 Continue','retry')]);
     if(EDITABLE.has(v.status)&&!active&&(v.storyId?.scenes?.length||v.sceneCount))rows.push([b('🎞 Scenes','scenes'),b('🖼 Rebuild all images','rebuild')]);
     if(active)rows.push([b('⏹ Cancel','cancel')]);
@@ -162,6 +164,20 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
         const r=await api('POST',`/youtube/publish/${videoId}`,action==='schedule'?{schedule:'profile'}:{});
         return tg.send(chatId,`${r.status==='SCHEDULED'?'🗓 Scheduled':'📺 Uploaded'}: <b>${esc(r.metadata?.title||v.title)}</b>\n${r.url}${r.seoReport?`\nSEO ${r.seoReport.score}/100`:''}${(r.warnings||[]).length?`\n⚠ ${esc(r.warnings.join(' '))}`:''}`);
       }
+      case 'booknext':{
+        let r;try{r=await api('GET',`/autopilot/${v.profile?.id}/next-slot`);}catch(e){return tg.send(chatId,`${esc(e.message)}`,{inline_keyboard:[[{text:'🕒 Pick a time',callback_data:`a:${nonce({action:'picktime',videoId})}`}]]});}
+        return tg.send(chatId,`Publish <b>${esc(v.title)}</b> at the next free time, <b>${esc(r.label)}</b>?\nIt is uploaded now as private and goes public then.`,{inline_keyboard:[[{text:`🗓 Yes, ${r.label}`,callback_data:`a:${nonce({action:'book',videoId,body:{at:r.slotAt},confirmed:true})}`}],[{text:'🕒 Pick another time',callback_data:`a:${nonce({action:'picktime',videoId})}`}]]});
+      }
+      case 'picktime':{
+        let tz='Asia/Kolkata';try{tz=(await api('GET',`/autopilot/${v.profile?.id}/next-slot`)).timezone||tz;}catch(e){tz=e?.body?.timezone||tz;}
+        awaiting.set(chatId,{kind:'time',videoId,timezone:tz,expires:now()+INPUT_TTL});
+        return tg.send(chatId,`When should <b>${esc(v.title)}</b> go public? Send a date and time (${esc(tz.replace(/_/g,' '))} time), for example:\n<code>27 Nov 18:30</code> · <code>tomorrow 9am</code> · <code>19:30</code> · <code>27/11 7pm</code>\n\nSend /cancel to stop.`);
+      }
+      case 'book':{
+        await tg.edit(chatId,messageId,`⏳ Booking <b>${esc(v.title)}</b>…`,{inline_keyboard:[]});
+        const r=await api('POST',`/autopilot/book/${videoId}`,body||{});
+        return tg.send(chatId,`🗓 <b>${esc(v.title)}</b> is booked for <b>${esc(r.label)}</b>. It is being uploaded to YouTube now (private until then); you'll get a message when the upload is done.`);
+      }
       case 'retry':await api('POST',`/videos/${videoId}/retry`);break;
       case 'scenes':return showScenes(chatId,v,messageId);
       case 'rebuild':{
@@ -201,7 +217,17 @@ export function createBot({tg,api,scope,now=()=>Date.now()}){
       return;
     }
     const pending=awaiting.get(chatId);
-    if(parsed?.cmd==='cancel'){awaiting.delete(chatId);return tg.send(chatId,pending?'Scene change cancelled.':'Nothing to cancel.');}
+    if(parsed?.cmd==='cancel'){awaiting.delete(chatId);return tg.send(chatId,pending?(pending.kind==='time'?'Scheduling cancelled.':'Scene change cancelled.'):'Nothing to cancel.');}
+    if(!parsed&&pending?.kind==='time'){
+      if(pending.expires<now()){awaiting.delete(chatId);return tg.send(chatId,'That expired. Open the video and press “🕒 Pick a time” again.');}
+      const text=String(msg.text||'').trim();
+      const r=parseWhen(text,pending.timezone,new Date(now()));
+      if(r.error)return tg.send(chatId,`${esc(r.error)}\nTry again, or send /cancel.`);
+      awaiting.delete(chatId);
+      const {v}=await loadVideo(chatId,pending.videoId);
+      const label=formatWhen(r.at,pending.timezone);
+      return tg.send(chatId,`Publish <b>${esc(v.title)}</b> at <b>${esc(label)}</b>?\nIt is uploaded now as private and goes public then.`,{inline_keyboard:[[{text:`🗓 Yes, ${label}`,callback_data:`a:${nonce({action:'book',videoId:pending.videoId,body:{at:r.at.toISOString()},confirmed:true})}`}],[{text:'🕒 Another time',callback_data:`a:${nonce({action:'picktime',videoId:pending.videoId})}`}]]});
+    }
     if(!parsed&&pending){
       awaiting.delete(chatId);
       if(pending.expires<now())return tg.send(chatId,'That scene change expired. Open the scene again.');

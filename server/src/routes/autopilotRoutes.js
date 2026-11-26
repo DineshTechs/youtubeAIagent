@@ -1,7 +1,9 @@
 import {Router} from 'express';
-import {status,runNow,getRun,makeAnyway} from '../controllers/autopilotController.js';
+import {status,runNow,getRun,makeAnyway,nextSlot,bookVideo} from '../controllers/autopilotController.js';
 const r=Router();
 r.get('/runs/:runId',getRun);
+r.post('/book/:videoId',bookVideo);
+r.get('/:seriesId/next-slot',nextSlot);
 r.post('/runs/:runId/generate',makeAnyway);
 r.get('/:seriesId',status);
 r.post('/:seriesId/run-now',runNow);

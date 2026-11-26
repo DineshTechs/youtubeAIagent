@@ -17,6 +17,8 @@ function harness({profiles = [{id: 'p1', name: 'Kalyug', scheduleTime: '18:00'}]
     if (path === '/agent/generate') return {jobId: 'j1', profile: {language: 'Hindi', format: 'Story Short', durationSec: 55}};
     if (path.startsWith('/youtube/preview/')) return {metadata: {title: 'SEO title', privacyStatus: 'private'}, youtube: {channelTitle: 'Kalyug TV'}, seoReport: {score: 90}, seo: {focusKeyword: 'kahani'}, problems: []};
     if (path.startsWith('/youtube/publish/')) return {status: body.schedule ? 'SCHEDULED' : 'PUBLISHED', url: 'https://www.youtube.com/watch?v=abc', metadata: {title: 'SEO title'}, seoReport: {score: 90}};
+    if (method === 'GET' && /^\/autopilot\/[^/]+\/next-slot$/.test(path)) return {slotAt: '2026-11-27T14:00:00.000Z', label: 'Fri, 27 Nov, 7:30 pm', timezone: 'Asia/Kolkata'};
+    if (method === 'POST' && path.startsWith('/autopilot/book/')) return {ok: true, label: body.at === '2026-11-27T14:00:00.000Z' ? 'Fri, 27 Nov, 7:30 pm' : 'Fri, 27 Nov, 6:30 pm'};
     if (method === 'DELETE') { delete videos[path.split('/')[2]]; return {ok: true}; }
     return {ok: true};
   };
@@ -92,19 +94,42 @@ test('approve needs confirmation, then saves visual review and approves', async 
   assert.deepEqual(paths, ['/videos/v1/visual-review', '/videos/v1/approve']);
 });
 
-test('upload and schedule confirm with SEO title and channel', async () => {
+test('upload now confirms with SEO title and channel', async () => {
   const h = harness();
   await h.press('o:v2');
-  assert.ok(h.button('Schedule 18:00'));
+  assert.ok(h.button('Next free slot') && h.button('Pick a time'));
   await h.press(h.button('Upload now').callback_data);
   assert.match(h.sent.at(-1).text, /Upload <b>SEO title<\/b> to <b>Kalyug TV<\/b> now as <b>private<\/b>[\s\S]*SEO 90\/100/);
   await h.press(h.button('Yes, upload').callback_data);
   assert.deepEqual(h.calls.find(c => c.path === '/youtube/publish/v2').body, {});
   assert.match(h.sent.at(-1).text, /Uploaded[\s\S]*youtube\.com/);
+});
+
+test('schedule for the next free slot', async () => {
+  const h = harness();
   await h.press('o:v2');
-  await h.press(h.button('Schedule').callback_data);
-  await h.press(h.button('Yes, upload').callback_data);
-  assert.deepEqual(h.calls.filter(c => c.path === '/youtube/publish/v2').at(-1).body, {schedule: 'profile'});
+  await h.press(h.button('Next free slot').callback_data);
+  assert.match(h.sent.at(-1).text, /next free time, <b>Fri, 27 Nov, 7:30 pm<\/b>/);
+  assert.equal(h.calls.filter(c => c.path.startsWith('/autopilot/book/')).length, 0, 'nothing booked before confirming');
+  await h.press(h.button('Yes, Fri').callback_data);
+  assert.deepEqual(h.calls.find(c => c.path === '/autopilot/book/v2').body, {at: '2026-11-27T14:00:00.000Z'});
+  assert.match(h.sent.at(-1).text, /booked for <b>Fri, 27 Nov, 7:30 pm<\/b>/);
+});
+
+test('schedule for a typed time, with a retry on a bad time', async () => {
+  const h = harness();
+  await h.press('o:v2');
+  await h.press(h.button('Pick a time').callback_data);
+  assert.match(h.sent.at(-1).text, /When should <b>Approved one<\/b> go public\?/);
+  await h.msg('sometime soon');
+  assert.match(h.sent.at(-1).text, /include a time/);
+  await h.msg('tomorrow 6:30 pm');
+  assert.match(h.sent.at(-1).text, /Publish <b>Approved one<\/b> at <b>/);
+  await h.press(h.button('Yes,').callback_data);
+  const call = h.calls.find(c => c.path === '/autopilot/book/v2');
+  assert.ok(call && /T13:00:00\.000Z$/.test(call.body.at), 'tomorrow 6:30 pm India time');
+  await h.msg('hello');
+  assert.doesNotMatch(h.sent.at(-1).text || '', /include a time/, 'no longer waiting for a time');
 });
 
 test('delete is confirmed; videos of other profiles are refused', async () => {

@@ -5,6 +5,8 @@ const schema=new mongoose.Schema({
   slotAt:{type:Date,required:true},
   status:{type:String,enum:['WAITING','GENERATING','APPROVED','SCHEDULED','PUBLISHED','NEEDS_ATTENTION','FAILED','SKIPPED'],default:'GENERATING'},
   manual:{type:Boolean,default:false},
+  // Booked by you (Telegram/dashboard) for this time: uploaded and scheduled to go public then.
+  booked:{type:Boolean,default:false},
   jobId:{type:mongoose.Schema.Types.ObjectId,ref:'GenerationJob'},
   videoId:{type:mongoose.Schema.Types.ObjectId,ref:'Video'},
   // WAITING: the earlier, not yet published video this slot is waiting for.
