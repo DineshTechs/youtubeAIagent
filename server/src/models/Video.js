@@ -4,6 +4,8 @@ const schema = new mongoose.Schema({
   status:{type:String,enum:['QUEUED','PLANNED','SCRIPT_GENERATED','SCRIPT_QA','ASSETS_GENERATING','VIDEO_RENDERING','VIDEO_QA','SCENE_REVIEW','AWAITING_APPROVAL','APPROVED','UPLOADING','SCHEDULED','PUBLISHED','FAILED','CANCELLED'],default:'PLANNED'},
   // Skipped by the user: Autopilot no longer waits for this video before making a new one.
   skippedAt:{type:Date,default:null},
+  // Narration check (audio complete, one voice, says the scene text): see narrationCheck.js.
+  narrationCheck:{type:mongoose.Schema.Types.Mixed,default:null},
   statusHistory:[{status:String,at:{type:Date,default:Date.now},message:String,attempt:{type:Number,default:0},source:{type:String,default:'VIDEO'}}],
   durationSec:Number, renderPath:String, thumbnailPath:String, youtubeVideoId:String, scheduledAt:Date, youtubeMetadata:mongoose.Schema.Types.Mixed, pendingSceneEdit:mongoose.Schema.Types.Mixed,
   // prompt/promptKey/generatedAt describe what the image was MADE from (kept when reused);

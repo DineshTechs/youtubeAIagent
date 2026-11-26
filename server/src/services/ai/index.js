@@ -134,7 +134,9 @@ function mediaMeta(settings = null) {
     ttsVoices,
     generationEnabled: settings?.media?.generationEnabled ?? d.media.generationEnabled,
     mockMode: settings?.media?.mockMode ?? d.media.mockMode,
-    pollinationsSafe: settings?.media?.pollinationsSafe ?? d.media.pollinationsSafe
+    pollinationsSafe: settings?.media?.pollinationsSafe ?? d.media.pollinationsSafe,
+    narrationCheck: settings?.media?.narrationCheck !== false,
+    narrationCheckWords: settings?.media?.narrationCheckWords !== false
   };
 }
 
@@ -222,7 +224,9 @@ export async function getMediaSettings() {
     ttsVoices: media.ttsVoices || defaults().media.ttsVoices,
     generationEnabled: media.generationEnabled ?? env.mediaGenerationEnabled,
     mockMode: media.mockMode ?? env.mediaMock,
-    pollinationsSafe: media.pollinationsSafe ?? (String(env.pollinationsSafe).toLowerCase()==='true')
+    pollinationsSafe: media.pollinationsSafe ?? (String(env.pollinationsSafe).toLowerCase()==='true'),
+    narrationCheck: media.narrationCheck !== false,
+    narrationCheckWords: media.narrationCheckWords !== false
   };
 }
 
@@ -267,7 +271,7 @@ export async function updateAIConfig(patch = {}) {
   if (patch.media?.imageQuality) allowed['media.imageQuality']=patch.media.imageQuality;
   if (patch.media?.ttsModels) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsModels[p]==='string' && patch.media.ttsModels[p].trim()) allowed[`media.ttsModels.${p}`]=patch.media.ttsModels[p].trim();
   if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string') allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim(); // '' = provider default
-  for (const k of ['generationEnabled','mockMode','pollinationsSafe']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
+  for (const k of ['generationEnabled','mockMode','pollinationsSafe','narrationCheck','narrationCheckWords']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
   if (patch.video) {
     for (const k of ['width','height','fps','imageFit']) if (patch.video[k] != null) allowed[`video.${k}`]=patch.video[k];
     if (patch.video.subtitlesEnabled != null) allowed['video.subtitlesEnabled']=Boolean(patch.video.subtitlesEnabled);

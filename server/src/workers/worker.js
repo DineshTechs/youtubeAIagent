@@ -16,6 +16,7 @@ import {speechSignature,readNarrationNote,writeNarrationNote,canReuseNarration,r
 import {generateMockImage,generateMockSpeech} from '../services/media/mockMedia.js';
 import {renderVideo,getAudioDuration} from '../services/video/renderer.js';
 import {narrationLooksCut,minSpeechSeconds} from '../utils/audioTiming.js';
+import {checkNarration} from '../services/media/narrationCheck.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
 import {makeSrt} from '../utils/srt.js';
 import {applyOpeningHook,chooseHook} from '../utils/openingRetention.js';
@@ -584,7 +585,17 @@ async function processJob(job){
       if(!report.pass) throw new Error(`Video technical QA failed: ${report.checks.filter(x=>x.status==='FAIL').map(x=>`${x.name}: ${x.message}`).join('; ')}`);
       return report;
     },{qaVersion:'1.7.0',checks:['file','full-decode','profile-aspect-ratio','resolution','duration','black-frames','audio-silence','audio-intelligence','opening-frame-samples','opening-black-frame-scan','opening-audio-start','opening-hook-caption','3-second-hook-delivery','opening-visual-pacing','scene-assets','subtitle-file','manual-visual-review']});
-    await setVideoStatus(video._id,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Complete visual review before approval.`,'clear',attempt);
+    // Narration check: complete, one voice, and (with a speech-to-text key) says its text.
+    await updateJob(jobId,97,'VIDEO_QA','Checking the narration of every scene.');
+    let narrationCheck=null;
+    if(!mediaSettings.mockMode&&mediaSettings.narrationCheck!==false){
+      try{
+        narrationCheck=await checkNarration({title:story.title||'',topic:story.topic||job.payload?.topic||'',checkWords:mediaSettings.narrationCheckWords!==false,scenes:story.scenes,files:sceneAudioFiles,durations:sceneDurations,language:channelProfile?.narration?.language||series.language||'English',env,getDuration:getAudioDuration,onProgress:m=>GenerationJob.findByIdAndUpdate(jobId,{$set:{lastHeartbeatAt:new Date()}}).catch(()=>{})});
+        await Video.findByIdAndUpdate(video._id,{$set:{narrationCheck}});
+        await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:narrationCheck.pass?'info':'warning',message:`Narration check: ${narrationCheck.summary}${narrationCheck.issues.length?` ${narrationCheck.issues.slice(0,4).join(' ')}`:''}`}}});
+      }catch(e){await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'warning',message:`Narration check could not run: ${e.message}`}}});}
+    }else if(!mediaSettings.mockMode){await Video.findByIdAndUpdate(video._id,{$set:{narrationCheck:null}});await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'info',message:'Narration check is turned off in Settings → AI providers → Narration.'}}});}
+    await setVideoStatus(video._id,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100).${narrationCheck&&!narrationCheck.pass?` Narration check found ${narrationCheck.issues.length} problem(s).`:''} Complete visual review before approval.`,'clear',attempt);
     await updateJob(jobId,100,'AWAITING_APPROVAL',`Technical QA passed (${qaReport.score}/100). Video ready for visual review.`,'COMPLETED',{completedAt:new Date(),lastHeartbeatAt:new Date()});
   }catch(e){
     if(e.code==='JOB_CANCELLED'||e.message==='JOB_CANCELLED'){

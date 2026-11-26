@@ -59,7 +59,10 @@ const schema = new mongoose.Schema({
     imagePriority: { type: [String], default: undefined },
     imageFallbackEnabled: { type: Boolean, default: true },
     ttsPriority: { type: [String], default: undefined },
-    ttsFallbackEnabled: { type: Boolean, default: true }
+    ttsFallbackEnabled: { type: Boolean, default: true },
+    // Narration check after rendering, and its speech-to-text word check.
+    narrationCheck: { type: Boolean, default: true },
+    narrationCheckWords: { type: Boolean, default: true }
   },
   video: {
     width: { type: Number, default: 1080, min: 360, max: 2160 },

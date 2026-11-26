@@ -24,7 +24,9 @@ export function normalizeAutopilot(raw={},{timezone='Asia/Kolkata'}={}){
     visibility:['public','unlisted','private'].includes(a.visibility)?a.visibility:'public',
     blockStaleImages:a.blockStaleImages!==false,
     // Don't make a new video while the previous one is still not published.
-    waitForPublish:a.waitForPublish!==false
+    waitForPublish:a.waitForPublish!==false,
+    // Don't publish if the narration check failed (cut, wrong words, mixed voices).
+    checkNarration:a.checkNarration!==false
   };
 }
 
@@ -58,6 +60,8 @@ export function autopilotProblems(video,settings){
   const named=list=>list.slice(0,4).map(c=>`${c.name}: ${c.message||c.status}`).join('; ');
   if(!video.qa)problems.push('No quality check (QA) report yet.');
   else if(video.qa.pass!==true){const fails=checks.filter(c=>c.status==='FAIL');problems.push(`Quality check failed${fails.length?` — ${named(fails)}`:''}.`);}
+  const nc=video.narrationCheck;
+  if(settings.checkNarration&&nc&&nc.pass===false)problems.push(...(nc.issues||[]).slice(0,4),...((nc.issues||[]).length>4?[`…and ${nc.issues.length-4} more narration problem(s).`]:[]));
   const score=Number(video.qa?.score);
   if(Number.isFinite(score)&&score<settings.minQaScore){const warns=checks.filter(c=>c.status==='WARN');problems.push(`Quality score ${score} is below your Autopilot minimum of ${settings.minQaScore}${warns.length?` (warnings: ${named(warns)})`:''}.`);}
   if(settings.blockStaleImages){const stale=(video.mediaAssetDetails||[]).filter(a=>a.stale).map(a=>a.sceneNumber);if(stale.length)problems.push(`Scene ${stale.join(', ')} image may not match the narration.`);}
