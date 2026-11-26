@@ -66,6 +66,8 @@ const schema = new mongoose.Schema({
     // Speech-to-text used by the word check: auto (Groq, then OpenAI), groq or openai.
     sttProvider: { type: String, default: 'auto' },
     sttModels: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+    // Order of speech-to-text services; the next one is tried when one fails.
+    sttPriority: { type: mongoose.Schema.Types.Mixed, default: null },
     // How closely the spoken words must match the text: strict, normal or relaxed.
     narrationMatchLevel: { type: String, default: 'normal' }
   },

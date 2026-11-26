@@ -10,7 +10,7 @@ import { TEXT_CATALOG, COMPATIBLE_PROVIDERS, textCredentialsFrom, textKeyStatus,
 import { ttsCredentialsFrom, ttsKeyStatus, saveTtsKeys } from './ttsKeys.js';
 import { keyList, keyKind, mediaKeyUpdate } from './keyCatalog.js';
 import { checkCloudflare, checkGemini, checkOpenAI } from './keyChecks.js';
-import { STT_PROVIDERS, testStt, sttKeyStatus } from '../media/narrationCheck.js';
+import { STT_PROVIDERS, testStt, sttKeyStatus, sttOrder } from '../media/narrationCheck.js';
 import { FREE_TTS_DEFAULTS } from '../media/freeTts.js';
 
 export const PROVIDERS = ['gemini', 'groq', 'cerebras', ...COMPATIBLE_PROVIDERS, 'openai', 'mock'];
@@ -141,7 +141,8 @@ function mediaMeta(settings = null) {
     sttProvider: STT_PROVIDERS[settings?.media?.sttProvider] ? settings.media.sttProvider : 'auto',
     sttModels: settings?.media?.sttModels || {},
     narrationMatchLevel: ['strict','normal','relaxed'].includes(settings?.media?.narrationMatchLevel) ? settings.media.narrationMatchLevel : 'normal',
-    sttKeys: sttKeyStatus(env, sttExtra(settings))
+    sttKeys: sttKeyStatus(env, sttExtra(settings)),
+    sttPriority: { order: sttOrder({ priority: settings?.media?.sttPriority, choice: settings?.media?.sttProvider }), fallbackEnabled: settings?.media?.sttPriority ? settings.media.sttPriority.fallbackEnabled !== false : true, saved: Boolean(settings?.media?.sttPriority?.order?.length) }
   };
 }
 
@@ -234,6 +235,7 @@ export async function getMediaSettings() {
     narrationCheckWords: media.narrationCheckWords !== false,
     sttProvider: STT_PROVIDERS[media.sttProvider] ? media.sttProvider : 'auto',
     sttExtra: sttExtra(settings),
+    sttPriority: media.sttPriority || null,
     sttModels: media.sttModels || {},
     narrationMatchLevel: ['strict','normal','relaxed'].includes(media.narrationMatchLevel) ? media.narrationMatchLevel : 'normal'
   };
@@ -282,6 +284,12 @@ export async function updateAIConfig(patch = {}) {
   if (patch.media?.ttsVoices) for (const p of TTS_PROVIDERS.filter(x=>x!=='mock')) if (typeof patch.media.ttsVoices[p]==='string') allowed[`media.ttsVoices.${p}`]=patch.media.ttsVoices[p].trim(); // '' = provider default
   if (patch.media?.sttProvider === 'auto' || STT_PROVIDERS[patch.media?.sttProvider]) allowed['media.sttProvider']=patch.media.sttProvider;
   if (['strict','normal','relaxed'].includes(patch.media?.narrationMatchLevel)) allowed['media.narrationMatchLevel']=patch.media.narrationMatchLevel;
+  if (patch.media?.sttPriority && typeof patch.media.sttPriority === 'object') {
+    const cur = (await getGlobalSettings())?.media?.sttPriority || {};
+    const order = Array.isArray(patch.media.sttPriority.order) ? [...new Set(patch.media.sttPriority.order.filter(id => STT_PROVIDERS[id]))] : (cur.order || sttOrder({ choice: (await getGlobalSettings())?.media?.sttProvider }));
+    if (!order.length) throw Object.assign(new Error('Keep at least one speech-to-text service in the list.'), { status: 400 });
+    allowed['media.sttPriority'] = { order, fallbackEnabled: typeof patch.media.sttPriority.fallbackEnabled === 'boolean' ? patch.media.sttPriority.fallbackEnabled : cur.fallbackEnabled !== false };
+  }
   if (patch.media?.sttModels) for (const p of Object.keys(STT_PROVIDERS)) if (STT_PROVIDERS[p].models.includes(patch.media.sttModels[p])) allowed[`media.sttModels.${p}`]=patch.media.sttModels[p];
   for (const k of ['generationEnabled','mockMode','pollinationsSafe','narrationCheck','narrationCheckWords']) if (patch.media?.[k] != null) allowed[`media.${k}`]=Boolean(patch.media[k]);
   if (patch.video) {

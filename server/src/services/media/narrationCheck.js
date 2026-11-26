@@ -148,6 +148,18 @@ export function sttProviderFrom(env, {choice = 'auto', models = {}, aiawaaz = nu
   }
   return null;
 }
+// Priority list: the services to try, in order, that have a key. priority = {order, fallbackEnabled}.
+// Without a saved order, the old single choice (or Auto: free ones first) is used.
+export function sttOrder({priority, choice = 'auto'} = {}) {
+  const saved = (priority?.order || []).filter(id => STT_PROVIDERS[id]);
+  if (saved.length) return [...new Set(saved)];
+  return STT_PROVIDERS[choice] ? [choice, ...AUTO_ORDER.filter(id => id !== choice)] : [...AUTO_ORDER];
+}
+export function sttChainFrom(env, {priority, choice = 'auto', models = {}, aiawaaz = null, elevenlabsKey = ''} = {}) {
+  const chain = sttOrder({priority, choice}).map(id => sttProviderFrom(env, {choice: id, models, aiawaaz, elevenlabsKey})).filter(Boolean);
+  const fallback = priority ? priority.fallbackEnabled !== false : choice === 'auto';
+  return fallback ? chain : chain.slice(0, 1);
+}
 export function sttKeyStatus(env, extra = {}) {
   const creds = credsOf(env, extra);
   return Object.fromEntries(Object.entries(STT_PROVIDERS).map(([id, p]) => [id, Boolean(p.key(creds))]));
@@ -166,10 +178,12 @@ export async function transcribe(file, {provider, language}, fetchImpl = fetch) 
 
 // Runs the whole check. getDuration(file) → seconds. Speech-to-text problems never fail
 // the video by themselves; they are reported as "words not checked".
-export async function checkNarration({scenes, files, durations, language, env, getDuration, title = '', topic = '', checkWords = true, sttChoice = 'auto', sttModels = {}, aiawaaz = null, elevenlabsKey = '', level = 'normal', fetchImpl = fetch, onProgress = () => {}}) {
-  const provider = checkWords ? sttProviderFrom(env || {}, {choice: sttChoice, models: sttModels, aiawaaz, elevenlabsKey}) : null;
+export async function checkNarration({scenes, files, durations, language, env, getDuration, title = '', topic = '', checkWords = true, sttChoice = 'auto', sttPriority = null, sttModels = {}, aiawaaz = null, elevenlabsKey = '', level = 'normal', fetchImpl = fetch, onProgress = () => {}}) {
+  const chain = checkWords ? sttChainFrom(env || {}, {priority: sttPriority, choice: sttChoice, models: sttModels, aiawaaz, elevenlabsKey}) : [];
+  const provider = chain[0] || null;
+  const broken = new Map(); // service id → why it stopped working (key, quota, missing tool)
+  const used = new Set();
   const rows = [];
-  let sttBroken = '';
   for (let i = 0; i < scenes.length; i++) {
     const text = scenes[i]?.narration || '';
     const file = files[i];
@@ -177,15 +191,23 @@ export async function checkNarration({scenes, files, durations, language, env, g
     const durationSec = exists ? (Number(durations[i]) || await getDuration(file).catch(() => 0)) : 0;
     const note = exists ? await readNarrationNote(file) : null;
     const row = {sceneNumber: scenes[i]?.sceneNumber || i + 1, text, durationSec, exists, voice: note ? [note.provider, note.voice].filter(Boolean).join(' / ') : ''};
-    if (exists && provider && !sttBroken) {
-      onProgress(`Checking scene ${row.sceneNumber} narration words (${provider.name})…`);
-      try { row.transcript = await transcribe(file, {provider, language}, fetchImpl); }
-      catch (e) { row.transcribeError = e.message; if (/\b(401|403|429)\b|no speech-to-text tool|only accepts|API key/i.test(e.message)) sttBroken = e.message; }
-    } else if (exists && sttBroken) row.transcribeError = sttBroken;
+    if (exists && chain.length) {
+      // Try the services in priority order; a scene that fails on one is tried on the next.
+      const errors = [];
+      for (const p of chain) {
+        if (broken.has(p.id)) { errors.push(`${p.name}: ${broken.get(p.id)}`); continue; }
+        onProgress(`Checking scene ${row.sceneNumber} narration words (${p.name})…`);
+        try { row.transcript = await transcribe(file, {provider: p, language}, fetchImpl); row.sttUsed = p.name; used.add(p.name); break; }
+        catch (e) { errors.push(`${p.name}: ${e.message}`); if (/\b(401|402|403|429)\b|no speech-to-text tool|only accepts|API key|credit|quota/i.test(e.message)) broken.set(p.id, short(e.message, 120)); }
+      }
+      if (typeof row.transcript !== 'string') row.transcribeError = errors.join(' | ') || 'no speech-to-text service worked';
+    }
     rows.push(row);
   }
-  const result = judgeNarration(rows, {transcribed: rows.some(r => typeof r.transcript === 'string'), sttProvider: provider ? (provider.model && !provider.mcp ? `${provider.name} (${provider.model})` : provider.name) : '', level});
-  if (checkWords && !provider && sttChoice !== 'auto') result.summary = result.summary.replace(/words not checked: add a speech-to-text key[^.;]*/, `words not checked: no ${STT_PROVIDERS[sttChoice]?.keyName || ''} key`);
+  const result = judgeNarration(rows, {transcribed: used.size > 0, sttProvider: [...used].join(' + ') || (provider?.name || ''), level});
+  result.sttChain = chain.map(p => p.name);
+  if (broken.size) result.warnings.push(`Speech-to-text problems: ${[...broken].map(([id, why]) => `${STT_PROVIDERS[id].name} (${why})`).join('; ')}.`);
+  if (checkWords && !provider && sttChoice !== 'auto' && !sttPriority) result.summary = result.summary.replace(/words not checked: add a speech-to-text key[^.;]*/, `words not checked: no ${STT_PROVIDERS[sttChoice]?.keyName || ''} key`);
   if (!checkWords) result.summary = result.summary.replace(/words not checked: add a speech-to-text key[^.;]*/, 'word check turned off in Settings');
   return addOpening(result, judgeOpening({scenes, title, topic, transcript: rows[0]?.transcript}));
 }

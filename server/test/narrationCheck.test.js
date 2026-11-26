@@ -201,3 +201,32 @@ test('key tests for the new services', async () => {
   await assert.rejects(testStt({deepgramKey: 'd'}, {choice: 'deepgram'}, async () => new Response('{"err_msg":"Invalid credentials."}', {status: 401})), /Deepgram rejected the key \(401\): Invalid credentials/);
   await assert.rejects(testStt({}, {choice: 'cloudflare'}), /No Cloudflare key/);
 });
+
+import {sttChainFrom, sttOrder} from '../src/services/media/narrationCheck.js';
+test('speech-to-text priority: your order, only services with a key, backups optional', () => {
+  const env = {groqKey: 'g', geminiKey: 'k', openaiKey: 'o'};
+  assert.deepEqual(sttChainFrom(env, {priority: {order: ['openai', 'deepgram', 'gemini', 'groq']}}).map(p => p.id), ['openai', 'gemini', 'groq']);
+  assert.deepEqual(sttChainFrom(env, {priority: {order: ['openai', 'gemini'], fallbackEnabled: false}}).map(p => p.id), ['openai']);
+  assert.deepEqual(sttOrder({choice: 'gemini'}).slice(0, 2), ['gemini', 'groq'], 'an old single choice becomes the first in the list');
+  assert.deepEqual(sttChainFrom(env, {}).map(p => p.id), ['groq', 'gemini', 'openai'], 'no order saved: free first');
+});
+test('a scene that fails on one service is checked with the next; a broken key is skipped after that', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chain-'));
+  const files = [];
+  for (let i = 0; i < 3; i++) { const f = path.join(dir, `scene-00${i + 1}.mp3`); await fs.writeFile(f, Buffer.alloc(3000, 1)); files.push(f); }
+  const calls = [];
+  const fake = async url => {
+    const who = url.includes('groq') ? 'groq' : 'gemini'; calls.push(who);
+    if (who === 'groq') return new Response('{"error":{"message":"Rate limit reached"}}', {status: 429});
+    return new Response(JSON.stringify({candidates: [{content: {parts: [{text: hi}]}}]}), {status: 200});
+  };
+  const scenes = [1, 2, 3].map(n => ({sceneNumber: n, narration: hi}));
+  const r = await checkNarration({scenes, files, durations: [6.5, 6.5, 6.5], language: 'Hindi', env: {groqKey: 'g', geminiKey: 'k'}, sttPriority: {order: ['groq', 'gemini']}, getDuration: async () => 6.5, fetchImpl: fake});
+  assert.deepEqual(calls, ['groq', 'gemini', 'gemini', 'gemini'], 'Groq tried once, then skipped');
+  assert.equal(r.scenes.every(s => s.status === 'PASS'), true);
+  assert.equal(r.transcribed, true);
+  assert.match(r.summary, /words checked with Gemini/);
+  assert.match(r.warnings.join(' '), /Speech-to-text problems: Groq Whisper \(.*429/);
+  assert.deepEqual(r.sttChain, ['Groq Whisper', 'Gemini']);
+  await fs.rm(dir, {recursive: true, force: true});
+});

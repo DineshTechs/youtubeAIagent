@@ -144,34 +144,38 @@ const STT={
   openai:{name:'OpenAI',key:'OpenAI',free:false,models:[['whisper-1','whisper-1'],['gpt-4o-mini-transcribe','gpt-4o-mini-transcribe'],['gpt-4o-transcribe','gpt-4o-transcribe (most accurate)']]}};
 const STT_AUTO=['groq','cloudflare','gemini','deepgram','aiawaaz','elevenlabs','openai'];
 function NarrationCheckPanel({media,busy,save,apiJson,json,openKeys}){
-  const [result,setResult]=useState(null);
-  const on=media.narrationCheck!==false,words=media.narrationCheckWords!==false,choice=media.sttProvider||'auto',keys=media.sttKeys||{};
-  const using=choice==='auto'?(STT_AUTO.find(id=>keys[id])||null):(keys[choice]?choice:null);
-  async function test(){setResult({pending:true});try{const r=await apiJson('/ai/test-stt',json('POST',{provider:choice==='auto'?undefined:choice}),0);setResult({ok:true,message:r.message,at:Date.now()});}catch(e){setResult({ok:false,message:/404|Cannot POST/i.test(e.message)?'Restart the backend to use this test.':e.message,at:Date.now()});}}
+  const [results,setResults]=useState({});
+  const on=media.narrationCheck!==false,words=media.narrationCheckWords!==false,keys=media.sttKeys||{};
+  const prio=media.sttPriority||{order:STT_AUTO,fallbackEnabled:true};
+  const items=Object.fromEntries(STT_AUTO.map(id=>[id,{name:STT[id].name,configured:Boolean(keys[id]),freeTier:STT[id].free}]));
+  const using=prio.order.filter(id=>keys[id]);
+  async function test(id){const k=`stt:${id}`;setResults(x=>({...x,[k]:{pending:true}}));try{const r=await apiJson('/ai/test-stt',json('POST',{provider:id}),0);setResults(x=>({...x,[k]:{ok:true,message:r.message,at:Date.now()}}));}catch(e){setResults(x=>({...x,[k]:{ok:false,message:/404|Cannot POST/i.test(e.message)?'Restart the backend to use this test.':e.message,at:Date.now()}}));}}
+  const off=!on||!words;
   return <>
     <Card eyebrow="NARRATION CHECK" title="What is checked" actions={<span className="muted small">Runs after each video is rendered</span>}>
       <Toggle checked={on} onChange={v=>save({narrationCheck:v},'Narration check')} label="Check the narration of every video" hint="Each scene: audio complete (not cut, not far too long) and one voice for the whole video. The opening: a complete sentence that fits the rest of the story. Autopilot does not publish a video that fails (switch per profile in Autopilot)."/>
       <Toggle checked={words} disabled={!on} onChange={v=>save({narrationCheckWords:v},'Word check')} label="Also check the spoken words (speech-to-text)" hint="Listens to each scene and compares what is said with the text. One short request per scene."/>
     </Card>
-    <Card eyebrow="NARRATION CHECK" title="Speech-to-text service" actions={<span className="muted small">{using?`Using ${STT[using].name}`:'No key yet'}</span>}>
-      <div className={`formGrid${!on||!words?' dim':''}`}>
-        <Field label="Service" hint="Auto uses the first one with a key, free ones first: Groq, Cloudflare, Gemini, then Deepgram, AI Awaaz, ElevenLabs, OpenAI."><select value={choice} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttProvider:e.target.value},'Speech-to-text service');}}>
-          <option value="auto">Auto (first one with a key)</option>{STT_AUTO.map(id=><option key={id} value={id}>{STT[id].name}{STT[id].free?' (free tier)':''}{keys[id]?'':' — no key'}</option>)}</select></Field>
-        {(choice==='aiawaaz'||(choice==='auto'&&using==='aiawaaz'))&&<Field label="AI Awaaz" hint={keys.aiawaaz?'Uses the AI Awaaz key and MCP address from API keys (relay included). Its speech-to-text tool is found automatically.':'No AI Awaaz key yet.'}><input value={keys.aiawaaz?'Key is set':'No key'} disabled/></Field>}
-        {[choice==='auto'?using:choice].filter(id=>id&&STT[id]?.models.length).map(id=><Field key={id} label={`${STT[id].name} model`} hint={keys[id]?'Key is set.':'No key yet.'}><select value={media.sttModels?.[id]||STT[id].models[0][0]} disabled={!on||!words||busy} onChange={e=>{setResult(null);save({sttModels:{[id]:e.target.value}},`${STT[id].name} model`);}}>{STT[id].models.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Field>)}
-        <Field label="How closely the words must match" hint="Strict flags small differences; Relaxed only flags audio that says something clearly different."><select value={media.narrationMatchLevel||'normal'} disabled={!on||!words||busy} onChange={e=>save({narrationMatchLevel:e.target.value},'Match level')}>
+    <Card eyebrow="SPEECH-TO-TEXT" title="Order of services" actions={<span className="muted small">{using.length?<>Main: <b>{STT[using[0]].name}</b></>:'No key yet'}</span>}>
+      <div className={off?'dim':''}>
+        <p className="muted small">Each scene is checked with the first service. If it fails (error, limit reached, key problem), that scene is checked with the next one; a service whose key or quota fails is skipped for the rest of the video.</p>
+        <PriorityList kind="stt" items={items} order={prio.order} fallbackEnabled={prio.fallbackEnabled} busy={busy||off} results={results}
+          onSave={b=>save({sttPriority:{order:b.order||prio.order,fallbackEnabled:typeof b.fallbackEnabled==='boolean'?b.fallbackEnabled:prio.fallbackEnabled}},'Speech-to-text order')}
+          onTest={test} onEdit={()=>openKeys()} editLabel={(id,p)=>p.configured?'Key':'Add key'}
+          describe={(id,p)=>`${p.freeTier?'🆓 free tier':'💳 paid'}${STT[id].models.length?` · ${(STT[id].models.find(m=>m[0]===media.sttModels?.[id])||STT[id].models[0])[1]}`:''}`}
+          fallbackText="If a service fails, check the scene with the next one in the list"/>
+      </div>
+    </Card>
+    <Card eyebrow="SPEECH-TO-TEXT" title="Models & strictness">
+      <div className={`formGrid${off?' dim':''}`}>
+        {STT_AUTO.filter(id=>STT[id].models.length>1&&prio.order.includes(id)).map(id=><Field key={id} label={`${STT[id].name} model`} hint={keys[id]?'Key is set.':'No key yet.'}><select value={media.sttModels?.[id]||STT[id].models[0][0]} disabled={off||busy} onChange={e=>save({sttModels:{[id]:e.target.value}},`${STT[id].name} model`)}>{STT[id].models.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></Field>)}
+        <Field label="How closely the words must match" hint="Strict flags small differences; Relaxed only flags audio that says something clearly different."><select value={media.narrationMatchLevel||'normal'} disabled={off||busy} onChange={e=>save({narrationMatchLevel:e.target.value},'Match level')}>
           <option value="strict">Strict (fail below 60%)</option><option value="normal">Normal (fail below 50%)</option><option value="relaxed">Relaxed (fail below 40%)</option></select></Field>
       </div>
-      <div className="row wrap">
-        <button className="ghost" disabled={!on||!words||busy||result?.pending} onClick={test}>Test speech-to-text</button>
-        <button className="ghost" onClick={openKeys}>{using?'Edit keys':'Add a key'}</button>
-      </div>
-      {result&&<div className={`prioResult ${result.pending?'pending':result.ok?'ok':'bad'}`}>{result.pending?<><span className="spinner" aria-hidden="true"/>Testing…</>:<>{result.ok?'✓':'✕'} {result.message}<em> · {new Date(result.at).toLocaleTimeString()}</em></>}</div>}
-      {!using&&on&&words&&<p className="muted small">Without a {choice==='auto'?'speech-to-text':STT[choice]?.key} key the other checks still run; the report says "words not checked".</p>}
+      {!using.length&&on&&words&&<p className="muted small">No service in the list has a key yet, so the other checks run and the report says "words not checked". <button className="ghost" onClick={openKeys}>Add a key</button></p>}
     </Card>
   </>;
 }
-
 function PriorityList({kind,items,order,fallbackEnabled,busy,results,onSave,onTest,onEdit,editLabel,describe,fallbackText}){
   const usable=order.filter(id=>items[id]?.configured);
   const others=Object.keys(items).filter(id=>!order.includes(id));
@@ -1036,7 +1040,7 @@ function App(){
       {aiMsg&&<div className="banner info">{aiMsg}{aiSavedAt&&<small className="muted"> · {aiSavedAt.toLocaleTimeString()}</small>}</div>}
       {!ai&&(aiError?<div className="banner error"><span>Couldn't load settings: {aiError}. Retrying automatically…</span><button className="ghost" onClick={loadAI}>Retry now</button></div>:<p className="muted">Loading settings…</p>)}
       {ai&&settingsTab==='providers'&&<>
-        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['check','🎧','Narration check',ai.media?.narrationCheck===false?'Off':ai.media?.narrationCheckWords===false?'On · words off':`On · ${ai.media?.sttProvider&&ai.media.sttProvider!=='auto'?(STT[ai.media.sttProvider]?.name||ai.media.sttProvider).split(' ')[0]:'auto'}`,0],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'||id==='check'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
+        <div className="providerTabs" role="tablist">{[['script','✍️','Script AI',providers[ai.activeProvider]?.name,(ai.textPriority?.order||[]).filter(id=>providers[id]?.configured).length],['images','🖼','Scene images',ai.media?.imageProviders?.[ai.media?.imageProvider]?.name,(ai.imagePriority?.order||[]).filter(id=>ai.media?.imageProviders?.[id]?.configured).length],['voice','🎙','Narration',ai.media?.ttsProviders?.[ai.media?.ttsProvider]?.name,(ai.ttsPriority?.order||[]).filter(id=>ai.media?.ttsProviders?.[id]?.configured).length],['check','🎧','Narration check',ai.media?.narrationCheck===false?'Off':ai.media?.narrationCheckWords===false?'On · words off':`On · ${(()=>{const k=ai.media?.sttKeys||{};const f=(ai.media?.sttPriority?.order||STT_AUTO).find(id=>k[id]);return f?STT[f].name.split(' ')[0]:'no key'})()}`,0],['keys','🔑','API keys','Edit, replace or remove',0]].map(([id,icon,label,main,n])=><button key={id} role="tab" aria-selected={providerTab===id} className={`providerTab ${providerTab===id?'active':''}`} onClick={()=>setProviderTab(id)}><span className="ptIcon">{icon}</span><span className="ptText"><b>{label}</b><small>{id==='keys'||id==='check'?main:main?`Main: ${main}`:'Not set up'}{n>1?` · ${n-1} backup${n>2?'s':''}`:''}</small></span></button>)}</div>
         {providerTab==='script'&&<>
         <Card eyebrow="SCRIPT AI" title="Order of providers" actions={<span className="muted small">Main: <b>{providers[ai.activeProvider]?.name||'—'}</b></span>}>
           <p className="muted small">Scripts, script checks, image planning, SEO and trending topics use these providers <b>from top to bottom</b>. Use ↑ ↓ to change the order.</p>
