@@ -16,7 +16,8 @@ app.use('/api/site',siteRoutes); app.use('/storage',express.static(path.resolve(
 const clientDist=process.env.CLIENT_DIST?path.resolve(process.env.CLIENT_DIST):path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../client/dist');
 // Public home page at /, dashboard at /app/ (needs `npm run build`; on your PC the dev dashboard is on :5173).
 const landingDir=process.env.LANDING_DIR?path.resolve(process.env.LANDING_DIR):path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../client/landing');
-const noCacheHtml={index:false,maxAge:'1d',setHeaders:(res,file)=>{if(file.endsWith('.html'))res.setHeader('Cache-Control','no-cache');}};
+// Pages, scripts and styles are re-checked on every visit so updates show at once; images may be cached for a day.
+const noCacheHtml={index:false,maxAge:'1d',setHeaders:(res,file)=>{if(/\.(html|js|css)$/.test(file))res.setHeader('Cache-Control','no-cache');}};
 if(existsSync(path.join(landingDir,'index.html'))){
   app.use('/landing',express.static(landingDir,noCacheHtml));
   app.get('/',(_req,res)=>{res.setHeader('Cache-Control','no-cache');res.sendFile(path.join(landingDir,'index.html'));});

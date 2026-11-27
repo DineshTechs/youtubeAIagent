@@ -40,13 +40,13 @@ const SITE_FALLBACK = {brand: 'AI Video Manager'};
         a.href = info.href; a.textContent = info.label;
         if (info.external) { a.target = '_blank'; a.rel = 'noopener'; }
         li.classList.remove('missing'); li.hidden = false;
-      } else if (li.classList.contains('optional')) li.hidden = true;
+      } else if (li.classList.contains('optional') || Object.values(l).some(Boolean)) li.hidden = true; // hide empty ways to reach you
       else { a.textContent = 'to be added'; a.removeAttribute('href'); li.classList.add('missing'); }
     }
     // Terms / privacy now have their own pages (/terms, /privacy).
   }
   render();
-  fetch('/api/site', {headers: {Accept: 'application/json'}})
+  fetch('/api/site', {headers: {Accept: 'application/json'}, cache: 'no-store'})
     .then(r => (r.ok ? r.json() : null))
     .then(j => { if (j) { SITE = {...SITE_FALLBACK, ...Object.fromEntries(Object.entries(j).filter(([, v]) => v))}; render(); } })
     .catch(() => {});

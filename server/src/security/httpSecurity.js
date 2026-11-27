@@ -19,16 +19,23 @@ export function originAllowed(origin, host, {production, allowed}) {
   return !production && LOCAL_ORIGIN.test(o);
 }
 
+// The dashboard and API only load this server's own files. The public pages (home,
+// privacy, terms) may also load Google Tag Manager / Google Analytics.
+const STRICT_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'";
+const G = 'https://www.googletagmanager.com https://*.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://*.g.doubleclick.net https://www.google.com https://*.google.co.in';
+const PUBLIC_CSP = `default-src 'self'; script-src 'self' https://www.googletagmanager.com https://*.googletagmanager.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ${G}; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' ${G}; frame-src https://www.googletagmanager.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`;
+export const isPublicPage = p => p === '/' || /^\/(privacy|terms)(\.html)?$/.test(p) || p.startsWith('/landing/');
+export function contentSecurityPolicy(p) { return isPublicPage(p) ? PUBLIC_CSP : STRICT_CSP; }
+
 export function securityHeaders({production}) {
   return (req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Referrer-Policy', isPublicPage(req.path) ? 'strict-origin-when-cross-origin' : 'same-origin');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     if (production && req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-    // The dashboard only loads its own files; images/audio/video come from this server.
-    if (production) res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
+    if (production) res.setHeader('Content-Security-Policy', contentSecurityPolicy(req.path));
     if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
     next();
   };

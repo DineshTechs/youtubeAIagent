@@ -3,7 +3,7 @@ import {normalizeSite, publicSite, SITE_DEFAULTS} from '../services/siteSettings
 
 async function current() { const d = await SiteSettings.findOne({key: 'global'}).lean(); return {...SITE_DEFAULTS, ...(d?.site || {})}; }
 // Public: the home page reads this.
-export async function getSite(_req, res, next) { try { res.setHeader('Cache-Control', 'public, max-age=60'); res.json(publicSite(await current())); } catch (e) { next(e); } }
+export async function getSite(_req, res, next) { try { res.setHeader('Cache-Control', 'no-cache'); res.json(publicSite(await current())); } catch (e) { next(e); } }
 // Admin only (protected by the login).
 export async function saveSite(req, res, next) {
   try {

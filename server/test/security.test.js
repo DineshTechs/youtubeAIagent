@@ -107,3 +107,17 @@ test('the home page can read its contact details; only the admin can change them
   assert.equal((await call(s.protect, {path: '/api/site'})).status, 'next');
   assert.equal((await call(s.protect, {method: 'PUT', path: '/api/site'})).status, 401);
 });
+
+import {contentSecurityPolicy, isPublicPage} from '../src/security/httpSecurity.js';
+test('Google Tag Manager is allowed on the public pages only', () => {
+  for (const p of ['/', '/privacy', '/terms', '/terms.html', '/landing/site.js']) {
+    assert.equal(isPublicPage(p), true, p);
+    assert.match(contentSecurityPolicy(p), /script-src 'self' https:\/\/www\.googletagmanager\.com/);
+    assert.doesNotMatch(contentSecurityPolicy(p).match(/script-src[^;]*/)[0], /unsafe/, 'no inline scripts allowed');
+  }
+  for (const p of ['/app/', '/app/settings', '/api/site', '/storage/x.mp4']) {
+    assert.equal(isPublicPage(p), false, p);
+    assert.match(contentSecurityPolicy(p), /script-src 'self';/);
+    assert.doesNotMatch(contentSecurityPolicy(p), /googletagmanager/);
+  }
+});

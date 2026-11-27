@@ -4,7 +4,7 @@
   const $$ = s => Array.from(document.querySelectorAll(s));
   const digits = v => String(v || '').replace(/\D/g, '');
   $$('[data-year]').forEach(el => { el.textContent = String(new Date().getFullYear()); });
-  fetch('/api/site').then(r => (r.ok ? r.json() : {})).catch(() => ({})).then(site => {
+  fetch('/api/site', {cache: 'no-store'}).then(r => (r.ok ? r.json() : {})).catch(() => ({})).then(site => {
     const name = site.business || site.brand || 'AI Video Manager';
     $$('[data-site="business"]').forEach(el => { el.textContent = name; });
     if (site.brand) $$('[data-site="brand"]').forEach(el => { el.textContent = site.brand; });
