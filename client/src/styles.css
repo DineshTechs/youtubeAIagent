@@ -48,7 +48,7 @@ input[type=checkbox]{width:auto;accent-color:var(--accent)}
 .sidebar{width:236px;flex:none;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:22px;padding:22px 14px;background:#0f0f0f;border-right:1px solid var(--border)}
 .brand{display:flex;gap:10px;align-items:center;padding:0 6px}
 .brand b{display:block;font-size:14.5px}.brand small{color:var(--muted);font-size:12px}
-.logo{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:13px;font-weight:800}
+.logo{width:34px;height:34px;border-radius:9px;display:block;flex:none}
 .sidebar nav{display:grid;gap:3px}
 .navItem{display:flex;align-items:center;gap:11px;background:transparent;color:var(--muted);padding:10px 12px;border-radius:10px;font-weight:550;text-align:left;width:100%}
 .navItem:hover{background:var(--surface2);color:var(--text)}

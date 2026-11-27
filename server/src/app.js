@@ -21,13 +21,16 @@ if(existsSync(path.join(landingDir,'index.html'))){
   app.use('/landing',express.static(landingDir,noCacheHtml));
   app.get('/',(_req,res)=>{res.setHeader('Cache-Control','no-cache');res.sendFile(path.join(landingDir,'index.html'));});
   // Icons and the sharing image at the site root, where browsers and social sites look for them.
-  for(const [route,file] of [['/favicon.svg','favicon.svg'],['/favicon.png','favicon.png'],['/favicon.ico','favicon.png'],['/apple-touch-icon.png','apple-touch-icon.png'],['/og-image.png','og-image.png']])
+  // Privacy policy and terms of service (linked from the home page, YouTube/Google app review).
+  for(const [route,file] of [['/privacy','privacy.html'],['/terms','terms.html']])
+    app.get([route,`${route}.html`],(_req,res)=>{res.setHeader('Cache-Control','no-cache');res.sendFile(path.join(landingDir,file));});
+  for(const [route,file] of [['/favicon.svg','favicon.svg'],['/favicon.png','favicon.png'],['/favicon.ico','favicon.png'],['/apple-touch-icon.png','apple-touch-icon.png'],['/og-image.png','og-image.png'],['/logo.svg','logo.svg'],['/logo.png','logo.png'],['/logo-512.png','logo-512.png']])
     app.get(route,(_req,res)=>{res.setHeader('Cache-Control','public, max-age=604800');res.sendFile(path.join(landingDir,file));});
 }
 // Search engines: index the home page only; never the dashboard, API or videos.
 const siteUrl=()=>String(process.env.PUBLIC_URL||'https://aividman.store').trim().replace(/\/+$/,'');
 app.get('/robots.txt',(_req,res)=>res.type('text/plain').send(`User-agent: *\nDisallow: /app/\nDisallow: /api/\nDisallow: /storage/\n\nSitemap: ${siteUrl()}/sitemap.xml\n`));
-app.get('/sitemap.xml',(_req,res)=>{let mod='';try{mod=statSync(path.join(landingDir,'index.html')).mtime.toISOString().slice(0,10);}catch{}res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${siteUrl()}/</loc>${mod?`<lastmod>${mod}</lastmod>`:''}<changefreq>weekly</changefreq><priority>1.0</priority></url>\n</urlset>\n`);});
+app.get('/sitemap.xml',(_req,res)=>{let mod='';try{mod=statSync(path.join(landingDir,'index.html')).mtime.toISOString().slice(0,10);}catch{}res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${siteUrl()}/</loc>${mod?`<lastmod>${mod}</lastmod>`:''}<changefreq>weekly</changefreq><priority>1.0</priority></url>\n  <url><loc>${siteUrl()}/privacy</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>\n  <url><loc>${siteUrl()}/terms</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>\n</urlset>\n`);});
 app.get(/^\/app$/,(req,res)=>res.redirect(302,'/app/'+(req.url.includes('?')?req.url.slice(req.url.indexOf('?')):''))); // exact /app only (a plain '/app' route also matches '/app/' and looped)
 if(existsSync(path.join(clientDist,'index.html'))){
   app.use('/app',express.static(clientDist,{...noCacheHtml,maxAge:'7d'}));

@@ -43,24 +43,13 @@ const SITE_FALLBACK = {brand: 'AI Video Manager'};
       } else if (li.classList.contains('optional')) li.hidden = true;
       else { a.textContent = 'to be added'; a.removeAttribute('href'); li.classList.add('missing'); }
     }
-    // Terms / privacy appear only when written in the dashboard.
-    let anyLegal = false;
-    for (const key of ['terms', 'privacy']) {
-      const has = Boolean(SITE[key]);
-      anyLegal = anyLegal || has;
-      setText(key, SITE[key]);
-      document.getElementById(key).hidden = !has;
-      $$(`[data-legal="${key}"]`).forEach(a => { a.hidden = !has; });
-    }
-    document.getElementById('legal').hidden = !anyLegal;
+    // Terms / privacy now have their own pages (/terms, /privacy).
   }
   render();
   fetch('/api/site', {headers: {Accept: 'application/json'}})
     .then(r => (r.ok ? r.json() : null))
     .then(j => { if (j) { SITE = {...SITE_FALLBACK, ...Object.fromEntries(Object.entries(j).filter(([, v]) => v))}; render(); } })
     .catch(() => {});
-  // Footer links open the matching legal text.
-  $$('[data-legal]').forEach(a => a.addEventListener('click', () => { const d = document.getElementById(a.getAttribute('data-legal')); if (d) d.open = true; }));
   // Buy buttons remember the plan and fill it into the messages.
   $$('[data-buy]').forEach(btn => btn.addEventListener('click', () => {
     plan = btn.getAttribute('data-buy');

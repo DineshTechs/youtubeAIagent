@@ -525,7 +525,7 @@ function LoginScreen({locked,onLogin}){
   const [form,setForm]=useState({username:'admin',password:''}),[busy,setBusy]=useState(false),[msg,setMsg]=useState('');
   async function submit(e){e.preventDefault();setBusy(true);setMsg('');try{const r=await fetch(`${API}/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(form)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||`Login failed (${r.status})`);setForm(f=>({...f,password:''}));onLogin(j);}catch(err){setMsg(err.message)}finally{setBusy(false)}}
   return <div className="loginPage"><form className="loginCard" onSubmit={submit}>
-    <div className="brand"><div className="logo">AI</div><div><b>AI Video Manager</b><small>Channel Studio</small></div></div>
+    <div className="brand"><img className="logo" src={`${import.meta.env.BASE_URL||"/"}logo-mark.svg`} alt=""/><div><b>AI Video Manager</b><small>Channel Studio</small></div></div>
     {locked?<div className="banner error"><span>This server has no admin password yet. Set <code>ADMIN_PASSWORD</code> (or <code>ADMIN_PASSWORD_HASH</code>) in the app's environment variables and restart it.</span></div>:<>
       <label>Username<input autoComplete="username" value={form.username} onChange={e=>setForm(f=>({...f,username:e.target.value}))}/></label>
       <label>Password<input type="password" autoComplete="current-password" autoFocus value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))}/></label>
@@ -777,7 +777,7 @@ function App(){
  if(auth.required&&!auth.loggedIn)return <LoginScreen locked={auth.locked} onLogin={()=>{setAuth(a=>({...a,loggedIn:true}));checkBackend();refresh();refreshStats();refreshActive();loadAI();loadSeries(true);}}/>;
  return <div className="app">
   <aside className="sidebar">
-   <div className="brand"><div className="logo">AI</div><div><b>AI Video Manager</b><small>Channel Studio</small></div></div>
+   <div className="brand"><img className="logo" src={`${import.meta.env.BASE_URL||"/"}logo-mark.svg`} alt=""/><div><b>AI Video Manager</b><small>Channel Studio</small></div></div>
    <nav>{NAV.map(([id,name])=><button key={id} className={`navItem ${tab===id?'active':''}`} onClick={()=>setTab(id)}><Icon name={id}/><span>{name}</span>{id==='videos'&&awaiting>0&&<em className="navBadge">{awaiting}</em>}</button>)}</nav>
    <div className="sideFooter">
      <div className={`backendPill ${backendStatus}`}><i/>{backendStatus==='online'?'Backend online':backendStatus==='checking'?'Connecting…':'Backend offline'}</div>

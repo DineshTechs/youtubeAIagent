@@ -168,3 +168,15 @@ section{max-width:var(--wrap);margin:0 auto;padding:88px 24px 0}
 .legal summary{cursor:pointer;font-weight:650}
 .legalText{white-space:pre-line;color:var(--muted);margin-top:10px;max-width:72ch}
 [hidden]{display:none !important}
+
+/* Brand mark image + privacy / terms pages */
+.brandLogo{width:32px;height:32px;display:block;border-radius:8px}
+.legalDoc{max-width:760px;margin:0 auto;padding:24px 24px 64px}
+.legalDoc h1{font-size:clamp(34px,5vw,48px);margin:16px 0 4px}
+.legalDoc .updated{color:var(--muted);font-size:14px;margin:0 0 28px}
+.legalDoc h2{font-size:24px;margin:36px 0 10px}
+.legalDoc h3{font-size:18px;margin:20px 0 6px;font-family:var(--body);font-stretch:normal}
+.legalDoc p,.legalDoc li{line-height:1.7}
+.legalDoc ul{padding-left:22px}
+.legalDoc a{color:var(--teal)}
+.legalDoc .custom{white-space:pre-wrap}
