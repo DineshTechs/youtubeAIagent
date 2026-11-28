@@ -713,6 +713,7 @@ function App(){
  const profileDirty=!sameForm(seriesForm,editSeries?formFromSeries(editSeries):DEFAULT_PROFILE_FORM)||Boolean(pendingResearch);
  profileDirtyRef.current=profileDirty;
  const setV=(k,v)=>setAi(x=>({...x,video:{...x.video,[k]:v}}));
+ const setEng=(k,v)=>setAi(x=>({...x,video:{...x.video,engagement:{...(x.video?.engagement||{}),[k]:v}}}));
  const setM=(k,v)=>setAi(x=>({...x,media:{...x.media,[k]:v}}));
  const setVD=(k,v)=>setAi(x=>({...x,visualDirector:{...x.visualDirector,[k]:v}}));
  const setF=(k,v)=>setSeriesForm(f=>({...f,[k]:v}));
@@ -1128,6 +1129,15 @@ function App(){
             <Field label={`Distance from edge · ${Number(ai.video?.subtitleOffsetPct??7)}%`} hint="YouTube Shorts buttons cover roughly the bottom 12–15%."><input type="range" min="2" max="40" value={Number(ai.video?.subtitleOffsetPct??7)} onChange={e=>setV('subtitleOffsetPct',Number(e.target.value))} disabled={(ai.video?.subtitlePosition||'bottom')==='center'}/></Field>
           </div>
           <div className="subPreview"><div className={`phone pos-${ai.video?.subtitlePosition||'bottom'}`} style={{'--off':`${Number(ai.video?.subtitleOffsetPct??7)}%`,'--fs':`${Number(ai.video?.subtitleFontSize??38)/1920*320}px`}}><span style={{fontFamily:`'${ai.video?.subtitleFontName||'Nirmala UI'}', sans-serif`}}>{ai.video?.subtitlesEnabled===false?'(subtitles off)':'क्या आप तैयार हैं? Let’s begin.'}</span></div><small className="muted">Preview (approximate)</small></div>
+        </div>
+        <div className="formSection"><h4>Engagement &amp; retention</h4><div className="toggleGrid">
+          <Toggle checked={ai.video?.engagement?.motion??true} onChange={v=>setEng('motion',v)} label="Moving pictures" hint="Each scene slowly zooms or pans (a different move each scene), so the picture never sits still. Rendering takes a little longer."/>
+          <Toggle checked={ai.video?.engagement?.hookTitle??true} onChange={v=>setEng('hookTitle',v)} label="Hook text at the start" hint="Shows the opening hook as a bold title for the first ~3 seconds, so silent scrollers know why to stay."/>
+          <Toggle checked={ai.video?.engagement?.progressBar??true} onChange={v=>setEng('progressBar',v)} label="Progress bar" hint="A thin red bar at the top fills up as the video plays. Viewers who see the end coming tend to stay for it."/>
+          <Toggle checked={ai.video?.engagement?.endCta??true} onChange={v=>setEng('endCta',v)} label="Follow reminder at the end" hint="Shows a short follow message in the last 3 seconds."/>
+        </div>
+          <div className="formGrid"><Field label="Follow reminder text" wide hint="Leave empty for the default in the video's language (Hindi: “ऐसी और कहानियों के लिए फ़ॉलो करें”). Up to 80 characters."><input maxLength={80} value={ai.video?.engagement?.ctaText||''} placeholder="Follow for more stories like this" onChange={e=>setEng('ctaText',e.target.value)} disabled={ai.video?.engagement?.endCta===false}/></Field></div>
+          <small className="muted">Every video also starts with a short 0.4-second pause before the first word, so the first word is never clipped by the player.</small>
         </div>
       </Card>}
       {ai&&settingsTab==='quality'&&<Card eyebrow="QUALITY" title="Image quality & OCR" actions={<button onClick={()=>saveAIConfig({visualDirector:ai.visualDirector,media:ai.media,quality:ai.quality},'Quality settings')} disabled={aiBusy}>Save</button>}>

@@ -83,7 +83,15 @@ const schema = new mongoose.Schema({
     // Where captions sit, and their distance from that edge in % of frame height.
     // 7% from the bottom matches the previous hard-coded placement.
     subtitlePosition: { type: String, enum: ['bottom', 'center', 'top'], default: 'bottom' },
-    subtitleOffsetPct: { type: Number, default: 7, min: 2, max: 40 }
+    subtitleOffsetPct: { type: Number, default: 7, min: 2, max: 40 },
+    // Viewer-retention extras added to every rendered video (all on by default).
+    engagement: {
+      motion: { type: Boolean, default: true },
+      hookTitle: { type: Boolean, default: true },
+      progressBar: { type: Boolean, default: true },
+      endCta: { type: Boolean, default: true },
+      ctaText: { type: String, default: '' }
+    }
   },
   quality: {
     // Clean-image regenerations allowed after OCR reads text in a scene image.

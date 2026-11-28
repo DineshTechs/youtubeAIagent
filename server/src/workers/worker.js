@@ -14,7 +14,8 @@ import {env} from '../config/env.js';
 import {generateImage,generateSpeech,currentSpeechVoice,lastImageProvider} from '../services/media/openaiMedia.js';
 import {speechSignature,readNarrationNote,writeNarrationNote,canReuseNarration,reuseProblem} from '../services/media/narrationReuse.js';
 import {generateMockImage,generateMockSpeech} from '../services/media/mockMedia.js';
-import {renderVideo,getAudioDuration} from '../services/video/renderer.js';
+import {renderVideo,getAudioDuration,addLeadIn,captionFont} from '../services/video/renderer.js';
+import {LEAD_IN_SECONDS,engagementSettings,onScreenHook,defaultCta,overlayAss} from '../utils/engagement.js';
 import {narrationLooksCut,minSpeechSeconds} from '../utils/audioTiming.js';
 import {checkNarration} from '../services/media/narrationCheck.js';
 import {runVideoQualityAssurance} from '../services/video/qualityAssurance.js';
@@ -549,6 +550,14 @@ async function processJob(job){
     await updateJob(jobId,64,'VOICE','All scene narration audio files generated and validated.');
 
     await assertNotCancelled(jobId,video._id,attempt);
+    // A short silence before the first words, so the opening word is never clipped.
+    if(sceneAudioFiles[0]&&!/-leadin\.mp3$/.test(sceneAudioFiles[0])){
+      try{
+        const lead=sceneAudioFiles[0].replace(/\.mp3$/i,'')+'-leadin.mp3';
+        await addLeadIn(sceneAudioFiles[0],lead,LEAD_IN_SECONDS);
+        sceneAudioFiles[0]=lead;sceneDurations[0]=Number(sceneDurations[0]||0)+LEAD_IN_SECONDS;
+      }catch(e){await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'warning',message:`Could not add the lead-in before the first words: ${e.message}`}}});}
+    }
     const srt=path.join(base,'subtitles.srt');
     await fs.writeFile(srt,makeSrt(story.scenes,sceneDurations),'utf8');
     if(sceneFiles.length===0||sceneFiles.length!==story.scenes.length) throw new Error(`No complete scene asset set is available for video rendering (${sceneFiles.length}/${story.scenes.length}).`);
@@ -567,8 +576,18 @@ async function processJob(job){
     // Profile caption settings override the global defaults in Settings → Output.
     const profileVisual=(series?buildChannelProfile(series):channelProfile)?.visual||{};
     const profileSubtitles={enabled:profileVisual.subtitles==='on'?true:profileVisual.subtitles==='off'?false:(aiMedia.video?.subtitlesEnabled??true),position:['bottom','center','top'].includes(profileVisual.subtitlePosition)?profileVisual.subtitlePosition:(aiMedia.video?.subtitlePosition||'bottom')};
+    // Engagement extras (Settings → Output → Engagement): motion, hook text, progress bar, call to action.
+    const eng=engagementSettings(aiMedia.video?.engagement);
+    let overlaysFile=null;
+    try{
+      const total=sceneDurations.reduce((a,b)=>a+Number(b||0),0);
+      const ass=overlayAss({width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fontName:captionFont(aiMedia.video?.subtitleFontName||'Nirmala UI'),captionsAt:profileSubtitles.position,total,
+        hookText:eng.hookTitle?onScreenHook({hook:story.hook,title:story.title}):'',hookEnd:Math.min(3.2,Number(sceneDurations[0]||3)-0.1),
+        ctaText:eng.endCta?(eng.ctaText||defaultCta(channelProfile?.narration?.language||series?.language||'')):''});
+      if(ass){overlaysFile=path.join(base,'overlays.ass');await fs.writeFile(overlaysFile,ass,'utf8');}
+    }catch(e){await GenerationJob.findByIdAndUpdate(jobId,{$push:{logs:{at:new Date(),level:'warning',message:`Engagement text overlay skipped: ${e.message}`}}});}
     let lastProgress=-1;
-    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:profileSubtitles.enabled,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',subtitlePosition:profileSubtitles.position,subtitleOffsetPct:aiMedia.video?.subtitleOffsetPct??7,shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
+    const rendered=await traceStage(jobId,'FFMPEG_RENDER',{videoId:video._id,sceneCount:sceneFiles.length,audioFile:audio,sceneAudioFiles,sceneDurations,subtitlesFile:srt,outDir:base},()=>renderVideo({videoId:video._id,sceneFiles,sceneAudioFiles,sceneDurations,audioFile:audio,subtitlesFile:srt,outDir:base,width:VIDEO_WIDTH,height:VIDEO_HEIGHT,fps:VIDEO_FPS,imageFit:IMAGE_FIT,subtitlesEnabled:profileSubtitles.enabled,subtitleFontSize:aiMedia.video?.subtitleFontSize||38,subtitleMarginV:aiMedia.video?.subtitleMarginV||85,subtitleFontName:aiMedia.video?.subtitleFontName||'Nirmala UI',subtitlePosition:profileSubtitles.position,subtitleOffsetPct:aiMedia.video?.subtitleOffsetPct??7,engagement:eng,overlaysFile,shouldCancel:async()=>{const state=await GenerationJob.findById(jobId).select('status cancelRequested').lean();return !state||state.status==='CANCELLED'||Boolean(state.cancelRequested);},onProgress:p=>{
       const progress=65+Math.round(p*.25);
       if(progress===lastProgress)return;
       lastProgress=progress;

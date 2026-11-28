@@ -6,6 +6,7 @@ import ffmpegStatic from 'ffmpeg-static';
 import {env} from '../../config/env.js';
 import {parseAudibleDurationFromFfmpegOutput} from '../../utils/audioTiming.js';
 import {fileURLToPath} from 'node:url';
+import {motionFilter,LEAD_IN_SECONDS} from '../../utils/engagement.js';
 
 const ffmpegPath = env.ffmpegPath || ffmpegStatic || 'ffmpeg';
 
@@ -69,7 +70,7 @@ async function validateAudio(audioFile){
   }
 }
 
-async function renderSceneClip(sceneFile,clipFile,duration,{width=1080,height=1920,fps=30,imageFit='cover',shouldCancel=null}={}){
+async function renderSceneClip(sceneFile,clipFile,duration,{width=1080,height=1920,fps=30,imageFit='cover',shouldCancel=null,motion=null}={}){
   let inputFile=sceneFile;
   let temporaryPng=null;
 
@@ -85,15 +86,17 @@ async function renderSceneClip(sceneFile,clipFile,duration,{width=1080,height=19
     '-y',
     '-hide_banner',
     '-loglevel','error',
+    ...(motion!=null?['-framerate',String(fps)]:[]),
     '-loop','1',
     '-i',inputFile,
     '-t',String(duration),
-    '-vf', imageFit === 'contain' ? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p` : `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},format=yuv420p`,
+    // Fit the frame, then (optionally) a slow zoom/pan so still images feel alive.
+    '-vf', `${imageFit === 'contain' ? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black` : `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`}${motion!=null?`,${motionFilter(motion,{width,height,fps,duration})}`:''},format=yuv420p`,
     '-r',String(fps),
     '-an',
     '-c:v','libx264',
     '-preset','veryfast',
-    '-tune','stillimage',
+    ...(motion!=null?[]:['-tune','stillimage']),
     '-pix_fmt','yuv420p',
     '-movflags','+faststart',
     clipFile
@@ -142,7 +145,7 @@ export function buildSubtitleStyle({width=1080,height=1920,fontSizePx=38,fontNam
   };
 }
 
-export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurations,audioFile,subtitlesFile,outDir,onProgress,width=1080,height=1920,fps=30,imageFit='cover',shouldCancel=null,subtitlesEnabled=true,subtitleFontSize=38,subtitleFontName='Nirmala UI',subtitlePosition='bottom',subtitleOffsetPct=7}){
+export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurations,audioFile,subtitlesFile,outDir,onProgress,width=1080,height=1920,fps=30,imageFit='cover',shouldCancel=null,subtitlesEnabled=true,subtitleFontSize=38,subtitleFontName='Nirmala UI',subtitlePosition='bottom',subtitleOffsetPct=7,engagement={},overlaysFile=null}){
   if(!Array.isArray(sceneFiles)||sceneFiles.length===0) throw new Error('No scene assets are available for video rendering.');
   if(!Array.isArray(sceneAudioFiles)||sceneAudioFiles.length!==sceneFiles.length) throw new Error(`Scene narration audio set is incomplete (${sceneAudioFiles?.length||0}/${sceneFiles.length}).`);
   if(!existsSync(ffmpegPath)&&ffmpegPath!=='ffmpeg') throw new Error(`FFmpeg executable was not found at: ${ffmpegPath}`);
@@ -163,7 +166,7 @@ export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurat
     // stale scene clips from surviving a selective image regeneration on Windows
     // or after an interrupted render.
     await fs.rm(clipFile,{force:true}).catch(()=>{});
-    await renderSceneClip(sceneFile,clipFile,Math.max(0.5,durations[i]),{width,height,fps,imageFit,shouldCancel});
+    await renderSceneClip(sceneFile,clipFile,Math.max(0.5,durations[i]),{width,height,fps,imageFit,shouldCancel,motion:engagement.motion?i:null});
     const clipStat=await fs.stat(clipFile);
     if(!clipStat.isFile()||clipStat.size<100) throw new Error(`Rendered scene clip ${i+1} is missing or empty.`);
     clipFiles.push(clipFile);
@@ -186,15 +189,28 @@ export async function renderVideo({videoId,sceneFiles,sceneAudioFiles,sceneDurat
   const videoPath=path.join(outDir,`final-${renderVersion}.mp4`);
   const canBurnSubtitles=Boolean(subtitlesEnabled!==false&&subtitlesFile&&isUsableFile(subtitlesFile));
   const subtitleStyle=buildSubtitleStyle({width,height,fontSizePx:subtitleFontSize,fontName:captionFont(subtitleFontName),position:subtitlePosition,offsetPct:subtitleOffsetPct});
-  if(canBurnSubtitles){
-    const subtitlePath=filterPath(subtitlesFile);
-    const style=subtitleStyle.forceStyle;
-    const fontsDir=existsSync(BUNDLED_FONTS_DIR)?`:fontsdir='${filterPath(BUNDLED_FONTS_DIR)}'`:'';
-    const filter=`subtitles='${subtitlePath}'${fontsDir}:force_style='${style}'`;
-    await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-map','0:v:0','-map','1:a:0','-vf',filter,'-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-shortest','-movflags','+faststart',videoPath],{shouldCancel});
+  // Final pass: captions, the hook / call-to-action text and the progress bar on top of the video.
+  const fontsDir=existsSync(BUNDLED_FONTS_DIR)?`:fontsdir='${filterPath(BUNDLED_FONTS_DIR)}'`:'';
+  const layers=[];
+  if(canBurnSubtitles)layers.push(`subtitles='${filterPath(subtitlesFile)}'${fontsDir}:force_style='${subtitleStyle.forceStyle}'`);
+  if(overlaysFile&&isUsableFile(overlaysFile))layers.push(`subtitles='${filterPath(overlaysFile)}'${fontsDir}`);
+  const bar=engagement.progressBar&&totalDuration>=3;
+  if(layers.length||bar){
+    const barH=Math.max(6,Math.round(height*0.0052));
+    const graph=bar
+      ?`[0:v]${layers.length?layers.join(','):'null'}[base];color=c=0xFF0033:s=${width}x${barH}:r=${fps}[bar];[base][bar]overlay=x='-w+w*t/${totalDuration.toFixed(3)}':y=0:shortest=1:eval=frame[v]`
+      :`[0:v]${layers.join(',')}[v]`;
+    await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-filter_complex',graph,'-map','[v]','-map','1:a:0','-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-shortest','-movflags','+faststart',videoPath],{shouldCancel});
   }else{
     await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',silentVideo,'-i',combinedAudio,'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','128k','-shortest',videoPath],{shouldCancel});
   }
   onProgress?.(95);
   return {videoPath,audioFile:combinedAudio,subtitlesFile:canBurnSubtitles?subtitlesFile:null,subtitlesBurned:canBurnSubtitles,subtitleStyle:canBurnSubtitles?{...subtitleStyle.summary,maxLines:2,profile:height>=width?'shorts-9:16':'landscape'}:null,subtitlesDisabledInSettings:subtitlesEnabled===false,durationSec:Number(totalDuration.toFixed(3)),sceneDurations:durations,sceneCount:sceneFiles.length,narrationSynchronized:true};
+}
+
+// A short silence before the first scene's narration, so players never clip the first word.
+export async function addLeadIn(input,output,seconds=LEAD_IN_SECONDS){
+  const ms=Math.round(seconds*1000);
+  await run(ffmpegPath,['-y','-hide_banner','-loglevel','error','-i',input,'-af',`adelay=${ms}:all=1`,'-c:a','libmp3lame','-q:a','2',output]);
+  return output;
 }

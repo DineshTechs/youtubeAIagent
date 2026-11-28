@@ -241,6 +241,13 @@ export function judgeOpening({scenes = [], title = '', topic = '', transcript} =
     const heardEnd = textSimilarity(tail(first), String(transcript).toLowerCase().normalize('NFC').replace(/[^\p{L}\p{M}\p{N}]+/gu, '').slice(-45));
     out.endMatch = Number(heardEnd.toFixed(2));
     if (heardEnd < 0.35) { out.complete = false; out.issues.push(`The opening (scene 1) audio does not reach its last words (“…${lastWords}”); it may be cut off.`); }
+    // Is the first word heard? A clipped start ("क्या" → "या") shows up as a missing first word.
+    const letters = t => String(t).toLowerCase().normalize('NFC').replace(/[^\p{L}\p{M}\p{N}]+/gu, '');
+    const firstWord = letters(first.split(' ')[0] || '');
+    const heardHead = letters(transcript).slice(0, 45);
+    out.startMatch = Number(textSimilarity(letters(first).slice(0, 30), heardHead).toFixed(2));
+    if (out.startMatch < 0.35) { out.complete = false; out.issues.push(`The opening (scene 1) audio does not start with its first words (“${first.split(' ').slice(0, 4).join(' ')}…”); the start may be cut off.`); }
+    else if (firstWord.length >= 2 && !heardHead.slice(0, firstWord.length + 12).includes(firstWord)) out.warnings.push(`The first word “${first.split(' ')[0]}” was not clearly heard at the start of the audio; it may be clipped.`);
   }
   if (rest.trim() || title || topic) {
     const a = contentWords(first), b = new Set([...contentWords(rest), ...contentWords(title), ...contentWords(topic)]);

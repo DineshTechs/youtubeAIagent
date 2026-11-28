@@ -38,7 +38,7 @@ function defaults() {
       mockMode: env.mediaMock,
       pollinationsSafe: String(env.pollinationsSafe).toLowerCase() === 'true'
     },
-    video: { width: 1080, height: 1920, fps: 30, imageFit: 'contain-blur', subtitlesEnabled: true, subtitleFontSize: 38, subtitleMarginV: 85, subtitleFontName: 'Nirmala UI', subtitlePosition: 'bottom', subtitleOffsetPct: 7 },
+    video: { width: 1080, height: 1920, fps: 30, imageFit: 'contain-blur', subtitlesEnabled: true, subtitleFontSize: 38, subtitleMarginV: 85, subtitleFontName: 'Nirmala UI', subtitlePosition: 'bottom', subtitleOffsetPct: 7, engagement: { motion: true, hookTitle: true, progressBar: true, endCta: true, ctaText: '' } },
     quality: { ocrMaxRetries: 2 },
     retention: { autoDeleteEnabled: true, days: 30 },
     visualDirector: { enabled: true, realism: true, continuity: true, eyeCatching: true, avoidTextInImages: true }
@@ -300,6 +300,11 @@ export async function updateAIConfig(patch = {}) {
     if (typeof patch.video.subtitleFontName === 'string' && patch.video.subtitleFontName.trim()) allowed['video.subtitleFontName']=patch.video.subtitleFontName.trim().replace(/[,:'"\\]/g,'').slice(0,80);
     if (['bottom','center','top'].includes(patch.video.subtitlePosition)) allowed['video.subtitlePosition']=patch.video.subtitlePosition;
     if (patch.video.subtitleOffsetPct != null && Number.isFinite(Number(patch.video.subtitleOffsetPct))) allowed['video.subtitleOffsetPct']=Math.max(2,Math.min(40,Number(patch.video.subtitleOffsetPct)));
+    const eg=patch.video.engagement;
+    if (eg && typeof eg==='object') {
+      for (const k of ['motion','hookTitle','progressBar','endCta']) if (eg[k] != null) allowed[`video.engagement.${k}`]=Boolean(eg[k]);
+      if (typeof eg.ctaText === 'string') allowed['video.engagement.ctaText']=eg.ctaText.replace(/[\r\n{}\\]+/g,' ').replace(/\s+/g,' ').trim().slice(0,80);
+    }
   }
   if (patch.quality?.ocrMaxRetries != null && Number.isFinite(Number(patch.quality.ocrMaxRetries))) allowed['quality.ocrMaxRetries']=Math.max(0,Math.min(3,Math.round(Number(patch.quality.ocrMaxRetries))));
   if (patch.retention) {
